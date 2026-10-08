@@ -58,6 +58,8 @@ const switchConfirmButton = document.getElementById("switch-confirm-button");
 const gatewayEditorDialog = document.getElementById("gateway-editor-dialog");
 const gatewayEditorHeading = document.getElementById("gateway-editor-heading");
 const gatewayOctetButtons = Array.prototype.slice.call(document.querySelectorAll("[data-octet-index]"));
+const gatewayPortButtons = Array.prototype.slice.call(document.querySelectorAll("[data-port-index]"));
+const gatewayEditorSegments = gatewayOctetButtons.concat(gatewayPortButtons);
 const gatewayEditorError = document.getElementById("gateway-editor-error");
 const gatewayEditorCancelButton = document.getElementById("gateway-editor-cancel");
 const gatewayEditorConnectButton = document.getElementById("gateway-editor-connect");
@@ -2002,6 +2004,13 @@ function updateGatewayEditor() {
   gatewayOctetButtons.forEach(function (button, index) {
     button.textContent = String(gatewayEditorState.octets[index]);
   });
+  gatewayPortButtons.forEach(function (button, index) {
+    button.textContent = String(gatewayEditorState.portDigits[index]);
+  });
+}
+
+function portDigitsFor(port) {
+  return ("00000" + String(port)).slice(-5).split("").map(Number);
 }
 
 function setGatewayEditorError(message) {
@@ -2016,14 +2025,15 @@ function openGatewayEditor(mode, gatewayId) {
     previousId: previousGateway ? previousGateway.id : null,
     previousGateway: previousGateway,
     octets: octetsForHost(previousGateway ? previousGateway.host : ""),
-    selectedOctet: 0,
+    portDigits: portDigitsFor(previousGateway ? previousGateway.port : GatewayStore.DEFAULT_PORT),
+    selectedSegment: 0,
   };
   gatewayEditorHeading.textContent = mode === "edit" ? "Edit Gateway" : "Add Gateway";
   gatewayEditorConnectButton.textContent = mode === "edit" ? "Save / Connect" : "Connect";
   setGatewayEditorError("");
   updateGatewayEditor();
   gatewayEditorDialog.hidden = false;
-  gatewayOctetButtons[0].focus();
+  gatewayEditorSegments[0].focus();
 }
 
 function closeGatewayEditor() {
@@ -2044,24 +2054,29 @@ function closeGatewayEditor() {
   return true;
 }
 
-function selectedGatewayOctetIndex() {
-  const active = document.activeElement;
-  const index = gatewayOctetButtons.indexOf(active);
-  return index >= 0 ? index : (gatewayEditorState ? gatewayEditorState.selectedOctet : 0);
+// The editor's segments, in the order left and right walk them: the four IPv4 octets, then the
+// five port digits.
+function selectedGatewaySegmentIndex() {
+  const index = gatewayEditorSegments.indexOf(document.activeElement);
+  return index >= 0 ? index : (gatewayEditorState ? gatewayEditorState.selectedSegment : 0);
 }
 
-function focusGatewayOctet(index) {
-  const normalized = Math.max(0, Math.min(gatewayOctetButtons.length - 1, index));
-  gatewayEditorState.selectedOctet = normalized;
-  gatewayOctetButtons[normalized].focus();
+function focusGatewaySegment(index) {
+  const normalized = Math.max(0, Math.min(gatewayEditorSegments.length - 1, index));
+  gatewayEditorState.selectedSegment = normalized;
+  gatewayEditorSegments[normalized].focus();
 }
 
-function changeGatewayOctet(direction) {
-  const index = selectedGatewayOctetIndex();
-  const value = gatewayEditorState.octets[index];
-  gatewayEditorState.octets[index] = GatewayIpv4.adjust(value, direction);
+function changeGatewaySegment(direction) {
+  const index = selectedGatewaySegmentIndex();
+  if (index < gatewayOctetButtons.length) {
+    gatewayEditorState.octets[index] = GatewayIpv4.adjust(gatewayEditorState.octets[index], direction);
+  } else {
+    const digit = index - gatewayOctetButtons.length;
+    gatewayEditorState.portDigits[digit] = (gatewayEditorState.portDigits[digit] + (direction >= 0 ? 1 : 9)) % 10;
+  }
   updateGatewayEditor();
-  focusGatewayOctet(index);
+  focusGatewaySegment(index);
 }
 
 function navigateGatewayEditor(direction) {
@@ -2071,15 +2086,15 @@ function navigateGatewayEditor(direction) {
   // Up and down change the selected segment; left and right walk the segments, then Connect
   // and Cancel, so a value is never left by pressing down to decrement it.
   const active = document.activeElement;
-  const octetIndex = gatewayOctetButtons.indexOf(active);
-  if (octetIndex >= 0) {
-    gatewayEditorState.selectedOctet = octetIndex;
+  const segmentIndex = gatewayEditorSegments.indexOf(active);
+  if (segmentIndex >= 0) {
+    gatewayEditorState.selectedSegment = segmentIndex;
     if (direction === "up" || direction === "down") {
-      changeGatewayOctet(direction === "up" ? 1 : -1);
+      changeGatewaySegment(direction === "up" ? 1 : -1);
     } else if (direction === "left") {
-      focusGatewayOctet(octetIndex - 1);
-    } else if (octetIndex + 1 < gatewayOctetButtons.length) {
-      focusGatewayOctet(octetIndex + 1);
+      focusGatewaySegment(segmentIndex - 1);
+    } else if (segmentIndex + 1 < gatewayEditorSegments.length) {
+      focusGatewaySegment(segmentIndex + 1);
     } else {
       gatewayEditorConnectButton.focus();
     }
@@ -2089,7 +2104,7 @@ function navigateGatewayEditor(direction) {
     if (direction === "left") {
       gatewayEditorCancelButton.focus();
     } else if (direction === "up") {
-      focusGatewayOctet(gatewayEditorState.selectedOctet);
+      focusGatewaySegment(gatewayEditorState.selectedSegment);
     }
     return true;
   }
@@ -2097,9 +2112,9 @@ function navigateGatewayEditor(direction) {
     if (direction === "right") {
       gatewayEditorConnectButton.focus();
     } else if (direction === "left") {
-      focusGatewayOctet(gatewayOctetButtons.length - 1);
+      focusGatewaySegment(gatewayEditorSegments.length - 1);
     } else if (direction === "up") {
-      focusGatewayOctet(gatewayEditorState.selectedOctet);
+      focusGatewaySegment(gatewayEditorState.selectedSegment);
     }
     return true;
   }
@@ -2111,11 +2126,17 @@ function connectGatewayFromEditor() {
     return;
   }
   const host = GatewayIpv4.format(gatewayEditorState.octets);
+  const port = Number(gatewayEditorState.portDigits.join(""));
+  if (port < 1 || port > 65535) {
+    setGatewayEditorError("The port must be between 1 and 65535.");
+    return;
+  }
   const previousGateway = gatewayEditorState.previousGateway;
   const candidate = {
     host: host,
-    port: GatewayStore.DEFAULT_PORT,
-    name: previousGateway ? previousGateway.name : "Gateway " + host,
+    port: port,
+    name: previousGateway ? previousGateway.name
+      : "Gateway " + host + (port === GatewayStore.DEFAULT_PORT ? "" : ":" + String(port)),
   };
   // A PC whose address changed keeps its pairing; a different PC rejects it and asks to pair.
   if (previousGateway && previousGateway.clientId) {
@@ -2585,7 +2606,7 @@ function activateFocusedControl() {
       return true;
     }
     // OK on a segment moves on, ending on Connect, as the right arrow does.
-    if (gatewayOctetButtons.indexOf(active) >= 0) {
+    if (gatewayEditorSegments.indexOf(active) >= 0) {
       return navigateGatewayEditor("right");
     }
     return false;
@@ -3378,10 +3399,10 @@ ui = TizenUi.create({
   onAddGateway: function () { openGatewayEditor("add"); },
   hasActiveGateway: function () { return Boolean(activeGateway && gatewayConnected); },
 });
-gatewayOctetButtons.forEach(function (button, index) {
+gatewayEditorSegments.forEach(function (button, index) {
   button.addEventListener("click", function () {
     if (gatewayEditorState) {
-      focusGatewayOctet(index);
+      focusGatewaySegment(index);
     }
   });
 });
