@@ -43,6 +43,7 @@
       <div class="settings-content">
         <section class="settings-panel" data-settings-panel="video" aria-label="Video settings">
           <label class="setting-row" for="resolution-select"><span>Resolution</span><select id="resolution-select" class="setting-select focusable"><option value="1280x720">1280 × 720</option><option value="1920x1080">1920 × 1080</option></select></label>
+          <label class="setting-row" for="fps-select"><span>Frame rate</span><select id="fps-select" class="setting-select focusable"><option value="60">60 fps</option></select></label>
           <label class="setting-row" for="codec-select"><span>Codec</span><select id="codec-select" class="setting-select focusable"><option value="h264">H.264</option><option value="hevc">HEVC (H.265)</option></select></label>
           <label class="setting-row" for="hdr-select"><span>HDR</span><select id="hdr-select" class="setting-select focusable"><option value="false">Off</option></select></label>
           <label class="setting-row" for="bitrate-select"><span>Bitrate</span><select id="bitrate-select" class="setting-select focusable"><option value="10000">10 Mbps</option><option value="12000" selected>12 Mbps</option><option value="15000">15 Mbps</option><option value="20000">20 Mbps</option><option value="25000">25 Mbps</option><option value="30000">30 Mbps</option></select></label>
@@ -114,6 +115,7 @@
   <script src="gateway-ipv4.js"></script>
   <script src="application-artwork.js"></script>
   <script src="update-check.js"></script>
+  <script src="frame-rate-support.js"></script>
   <script src="ui.js"></script>
   <script src="app.js"></script>
 </body>

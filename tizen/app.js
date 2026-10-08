@@ -10,6 +10,12 @@ const durableStorage = DurableStorage.create({
 const preferences = ClientPreferences.create(durableStorage);
 const gatewayStore = GatewayStore.create(durableStorage);
 const wakeOnLan = WakeOnLan.create({ log: function (message) { log(message); } });
+const frameRateSupport = FrameRateSupport.create({
+  mediaCapabilities: navigator.mediaCapabilities,
+  log: function (message) { log(message); },
+});
+// The modes last asked about, so repeated capabilities messages do not ask the TV again.
+let frameRateProbeSignature = "";
 const updateCheck = UpdateCheck.create({
   storage: durableStorage,
   fetchJson: fetchJson,
@@ -48,6 +54,7 @@ const resolutionSelect = document.getElementById("resolution-select");
 const codecSelect = document.getElementById("codec-select");
 const hdrSelect = document.getElementById("hdr-select");
 const bitrateSelect = document.getElementById("bitrate-select");
+const frameRateSelect = document.getElementById("fps-select");
 const interpolationSelect = document.getElementById("interpolation-select");
 const interpolationStatusElement = document.getElementById("interpolation-status");
 const interpolationCanvas = document.getElementById("interpolation-canvas");
@@ -978,6 +985,8 @@ function currentPreferenceValues() {
     hdr: hdrSelect.value === "true",
     bitrateKbps: Number.isInteger(Number(bitrateSelect.value))
       ? Number(bitrateSelect.value) : null,
+    frameRate: Number.isInteger(Number(frameRateSelect.value)) && Number(frameRateSelect.value) > 0
+      ? Number(frameRateSelect.value) : null,
     frameInterpolation: interpolationSelect.value === "true",
   };
 }
@@ -1045,6 +1054,48 @@ function applyCapabilities(message) {
   codecSelectionWasIntentional = Boolean(savedPreferences.codec);
   applySelectedVideoMode(savedPreferences);
   persistCurrentPreferences();
+  probeFrameRates();
+}
+
+// Asks the TV which frame rates it sustains for every mode and codec, then refreshes the menu.
+function probeFrameRates() {
+  const modes = videoModes.map(function (mode) {
+    return Object.assign({}, mode, { codecs: (mode.codecs || []).filter(tvCanReceiveVideoCodec) });
+  });
+  const signature = JSON.stringify(modes);
+  if (modes.length === 0 || signature === frameRateProbeSignature) {
+    return;
+  }
+  frameRateProbeSignature = signature;
+  frameRateSupport.probe(modes).then(function () {
+    updateFrameRateOptions(selectedVideoMode(), savedPreferences.frameRate);
+    persistCurrentPreferences();
+  });
+}
+
+// The TV's own maximum when it announces one; otherwise every rate the PC offers, to choose from.
+function updateFrameRateOptions(mode, preferredRate) {
+  if (!mode) {
+    return;
+  }
+  const rates = FrameRateSupport.frameRatesOf(mode);
+  const maximum = frameRateSupport.maximumRate(mode, codecSelect.value);
+  if (maximum !== null) {
+    const allowed = rates.filter(function (rate) { return rate <= maximum; });
+    const rate = allowed.length > 0 ? Math.max.apply(null, allowed) : Math.min.apply(null, rates);
+    replaceSelectOptions(frameRateSelect, [rate], {
+      value: function (value) { return String(value); },
+      label: function (value) { return String(value) + " fps — TV maximum"; },
+    });
+    frameRateSelect.value = String(rate);
+    return;
+  }
+  const previousRate = typeof preferredRate === "number" ? preferredRate : Number(frameRateSelect.value);
+  replaceSelectOptions(frameRateSelect, rates, {
+    value: function (value) { return String(value); },
+    label: function (value) { return String(value) + " fps"; },
+  });
+  selectSavedOrDefault(frameRateSelect, previousRate, rates.indexOf(60) >= 0 ? "60" : String(rates[0]));
 }
 
 function selectedVideoMode() {
@@ -1128,6 +1179,7 @@ function applySelectedVideoMode(preferencesToRestore) {
   codecSelect.value = keepIntentionalCodec ? previousCodec : mode.defaultCodec;
   updatingCodecOptions = false;
   updateHdrOptions(mode, preferencesToRestore ? preferencesToRestore.hdr : undefined);
+  updateFrameRateOptions(mode, preferencesToRestore ? preferencesToRestore.frameRate : undefined);
   selectSavedOrDefault(
     bitrateSelect,
     preferencesToRestore ? preferencesToRestore.bitrateKbps : null,
@@ -1404,7 +1456,7 @@ function selectedSettings() {
     appTitle: appSelect.options[appSelect.selectedIndex].textContent,
     width: Number(dimensions[0]),
     height: Number(dimensions[1]),
-    fps: 60,
+    fps: Number(frameRateSelect.value) || 60,
     codec: codecSelect.value,
     bitrateKbps: Number(bitrateSelect.value),
     hdr: hdrSelect.value === "true",
@@ -2843,8 +2895,10 @@ codecSelect.addEventListener("change", function () {
     hdrSelect.value = "false";
   }
   updateHdrOptions(selectedVideoMode());
+  updateFrameRateOptions(selectedVideoMode());
   persistCurrentPreferences();
 });
+frameRateSelect.addEventListener("change", persistCurrentPreferences);
 hdrSelect.addEventListener("change", function () {
   const mode = selectedVideoMode();
   // Turning HDR on keeps an HDR-capable codec (HEVC or AV1) and otherwise switches to HEVC.

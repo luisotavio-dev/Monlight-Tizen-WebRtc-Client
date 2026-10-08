@@ -7,6 +7,7 @@
     codec: null,
     hdr: false,
     bitrateKbps: null,
+    frameRate: null,
     frameInterpolation: false,
   });
 
@@ -16,6 +17,7 @@
       codec: DEFAULTS.codec,
       hdr: DEFAULTS.hdr,
       bitrateKbps: DEFAULTS.bitrateKbps,
+      frameRate: DEFAULTS.frameRate,
       frameInterpolation: DEFAULTS.frameInterpolation,
     };
   }
@@ -36,6 +38,9 @@
     }
     if (Number.isInteger(candidate.bitrateKbps) && candidate.bitrateKbps > 0) {
       values.bitrateKbps = candidate.bitrateKbps;
+    }
+    if (Number.isInteger(candidate.frameRate) && candidate.frameRate > 0) {
+      values.frameRate = candidate.frameRate;
     }
     if (typeof candidate.frameInterpolation === "boolean") {
       values.frameInterpolation = candidate.frameInterpolation;

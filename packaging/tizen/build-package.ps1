@@ -41,6 +41,7 @@ try {
         'config.xml',
         'durable-storage.js',
         'frame-interpolation.js',
+        'frame-rate-support.js',
         'gamepad-input.js',
         'gamepad-ui-navigation.js',
         'gateway-auth.js',
