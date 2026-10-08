@@ -51,6 +51,7 @@ try {
         'tizen_web_project.yaml',
         'ui.css',
         'ui.js',
+        'update-check.js',
         'wake-on-lan.js'
     )
     foreach ($runtimeFile in $runtimeFiles) {

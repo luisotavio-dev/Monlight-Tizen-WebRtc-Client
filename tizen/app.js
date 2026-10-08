@@ -10,6 +10,13 @@ const durableStorage = DurableStorage.create({
 const preferences = ClientPreferences.create(durableStorage);
 const gatewayStore = GatewayStore.create(durableStorage);
 const wakeOnLan = WakeOnLan.create({ log: function (message) { log(message); } });
+const updateCheck = UpdateCheck.create({
+  storage: durableStorage,
+  fetchJson: fetchJson,
+  log: function (message) { log(message); },
+});
+// Checked shortly after start, so it never delays connecting to the PC.
+const UPDATE_CHECK_DELAY_MS = 10000;
 // How long a woken PC may take to boot and start the Gateway service before the TV gives up.
 const GATEWAY_WAKE_TIMEOUT_MS = 120000;
 // A sleeping PC never answers the TCP handshake, and the retransmissions back off to a minute
@@ -245,6 +252,43 @@ function errorMessage(error) {
 function setHomeMessage(message, isError) {
   homeMessage.textContent = message;
   homeMessage.classList.toggle("error", Boolean(isError));
+}
+
+// XMLHttpRequest rather than fetch, which older Tizen runtimes lack.
+function fetchJson(url) {
+  return new Promise(function (resolve, reject) {
+    const request = new XMLHttpRequest();
+    request.open("GET", url);
+    request.timeout = 15000;
+    request.setRequestHeader("Accept", "application/vnd.github+json");
+    request.onload = function () {
+      if (request.status < 200 || request.status >= 300) {
+        reject(new Error("HTTP " + request.status));
+        return;
+      }
+      try {
+        resolve(JSON.parse(request.responseText));
+      } catch (error) {
+        reject(error);
+      }
+    };
+    request.onerror = function () { reject(new Error("network error")); };
+    request.ontimeout = function () { reject(new Error("timed out")); };
+    request.send();
+  });
+}
+
+// A Tizen app cannot install itself, so a newer release is announced with how to install it.
+function checkForUpdate() {
+  updateCheck.check().then(function (release) {
+    if (!release) {
+      return;
+    }
+    log("Moonlight WebRTC " + release.version + " is available");
+    showNotification("Update available",
+      "Moonlight WebRTC " + release.version + " is out. Install it with Apps2Samsung from "
+        + UpdateCheck.RELEASES_PAGE + ".", false);
+  });
 }
 
 function showNotification(title, message, isError) {
@@ -3457,3 +3501,5 @@ restoreCachedCapabilities();
 updateInterpolationStatus();
 renderGateways();
 probeSavedGateways();
+document.getElementById("app-version").textContent = UpdateCheck.APP_VERSION;
+setTimeout(checkForUpdate, UPDATE_CHECK_DELAY_MS);
