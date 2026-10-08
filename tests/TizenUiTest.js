@@ -77,6 +77,11 @@ assert.ok(appSource.includes('changeGatewaySegment(direction === "up" ? 1 : -1);
 assert.ok(html.includes('data-port-index="4"') && appSource.includes("port: port,")
   && appSource.includes("The port must be between 1 and 65535."),
   "the PC editor must let the port be changed, since Sunshine's webrtc_port is configurable");
+assert.ok(appSource.includes("discoverPcs();") && appSource.includes("function discoverForGatewayEditor()")
+  && html.includes('id="gateway-editor-discovery"'),
+  "PCs running Sunshine-Web-RTC are found on the network at startup and when adding one");
+assert.ok(appSource.includes("if (state.edited) {") && appSource.includes("gatewayEditorState.edited = true;"),
+  "a PC found while the user is typing an address must not overwrite it");
 assert.ok(uiSource.includes("this.ensureGatewayFocus();"),
   "the first selectable gateway must receive initial focus when it becomes available");
 assert.ok(uiSource.includes("TizenUi.prototype.focusSettingsCategory"),

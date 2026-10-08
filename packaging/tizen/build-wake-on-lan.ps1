@@ -50,17 +50,17 @@ try {
     $env:PATH = "$emscripten;$($python.DirectoryName);$($node.DirectoryName);$env:PATH"
 
     # Sockets are refused on the browser main thread, so the module sends from a pthread; the
-    # pool keeps one worker ready so the first wake does not wait for a thread to start.
+    # pool keeps two workers ready so a wake or a discovery never waits for a thread to start.
     $arguments = @(
         $source, '-Os', '-Wall', '-Wextra', '-Werror',
         '-s', 'WASM=1',
         '-s', 'ENVIRONMENT_MAY_BE_TIZEN=1',
         '-s', 'USE_PTHREADS=1',
-        '-s', 'PTHREAD_POOL_SIZE=1',
+        '-s', 'PTHREAD_POOL_SIZE=2',
         '-s', 'TOTAL_MEMORY=16777216',
         '-s', 'MODULARIZE=1',
         '-s', 'EXPORT_NAME=createWakeOnLanModule',
-        '-s', "EXPORTED_FUNCTIONS=['_wol_send']",
+        '-s', "EXPORTED_FUNCTIONS=['_wol_send','_net_discover']",
         '-s', "EXTRA_EXPORTED_RUNTIME_METHODS=['ccall']",
         '-o', $output
     )

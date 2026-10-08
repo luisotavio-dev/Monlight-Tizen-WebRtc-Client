@@ -4,6 +4,9 @@
   const MODULE_SCRIPT_URL = "wasm/wake-on-lan.js";
   const MODULE_FACTORY = "createWakeOnLanModule";
   const RESULT_TIMEOUT_MS = 5000;
+  // Sunshine-Web-RTC answers discovery on this UDP port whatever its signaling port is.
+  const DISCOVERY_PORT = 8000;
+  const DISCOVERY_TIMEOUT_MS = 2000;
 
   // Returns the canonical "AA:BB:CC:DD:EE:FF" form, or null for anything that cannot identify
   // one network adapter: malformed text, the all-zero address, and group (multicast or
@@ -34,6 +37,36 @@
       : null;
   }
 
+  // A discovery reply, with the address it came from, as a PC to connect to; null when it is
+  // not one. Only the fields the TV uses are kept, and every one is checked.
+  function parseDiscoveryReply(address, text) {
+    let message;
+    try {
+      message = JSON.parse(text);
+    } catch (error) {
+      return null;
+    }
+    const octets = String(address).split(".");
+    const isIpv4 = octets.length === 4 && octets.every(function (octet) {
+      return /^(0|[1-9][0-9]{0,2})$/.test(octet) && Number(octet) <= 255;
+    });
+    if (!isIpv4 || !message || message.version !== 2 || message.type !== "discovery"
+      || !Number.isInteger(message.port) || message.port < 1 || message.port > 65535) {
+      return null;
+    }
+    const pc = {
+      host: String(address),
+      port: message.port,
+      name: typeof message.name === "string" && message.name.trim()
+        ? message.name.trim().slice(0, 96) : "Sunshine " + address,
+    };
+    const macAddress = normalizeMacAddress(message.macAddress);
+    if (macAddress) {
+      pc.macAddress = macAddress;
+    }
+    return pc;
+  }
+
   // The magic packet itself is assembled in WebAssembly; this mirror exists so the layout the
   // TV sends can be checked without a TV.
   function buildMagicPacket(macAddress) {
@@ -57,6 +90,7 @@
     this.modulePromise = null;
     this.nextRequestId = 1;
     this.pending = new Map();
+    this.discoveries = new Map();
   }
 
   // Tizen exposes sockets to WebAssembly only on Samsung TVs; the module also needs threads.
@@ -105,6 +139,16 @@
           onWakeResult: function (requestId, sent, errorCode) {
             sender.handleResult(requestId, sent, errorCode);
           },
+          onDiscoveryReply: function (requestId, address, text) {
+            const discovery = sender.discoveries.get(requestId);
+            const pc = discovery ? parseDiscoveryReply(address, text) : null;
+            if (pc && !discovery.found.some(function (known) { return known.host === pc.host && known.port === pc.port; })) {
+              discovery.found.push(pc);
+            }
+          },
+          onDiscoveryDone: function (requestId, replies, errorCode) {
+            sender.finishDiscovery(requestId, errorCode);
+          },
           onRuntimeInitialized: function () { resolve({ runtime: runtime }); },
           onAbort: function (reason) {
             reject(new Error("The Wake-on-LAN module stopped: " + String(reason)));
@@ -152,10 +196,49 @@
     });
   };
 
+  WakeOnLanSender.prototype.finishDiscovery = function (requestId, errorCode) {
+    const discovery = this.discoveries.get(requestId);
+    if (!discovery) {
+      return;
+    }
+    this.discoveries.delete(requestId);
+    clearTimeout(discovery.timer);
+    if (discovery.found.length === 0 && errorCode) {
+      discovery.reject(new Error("PC discovery failed (error " + String(errorCode) + ")"));
+    } else {
+      discovery.resolve(discovery.found);
+    }
+  };
+
+  // Resolves to the PCs running Sunshine-Web-RTC that answered a broadcast on the local network.
+  WakeOnLanSender.prototype.discover = function () {
+    if (!this.isSupported()) {
+      return Promise.reject(new Error("PC discovery requires a Samsung TV with WebAssembly sockets"));
+    }
+    const sender = this;
+    return this.loadModule().then(function (loaded) {
+      return new Promise(function (resolve, reject) {
+        const requestId = sender.nextRequestId;
+        sender.nextRequestId += 1;
+        // The module reports back after DISCOVERY_TIMEOUT_MS; this only covers a module that never does.
+        const timer = setTimeout(function () {
+          sender.finishDiscovery(requestId, 0);
+        }, DISCOVERY_TIMEOUT_MS + RESULT_TIMEOUT_MS);
+        sender.discoveries.set(requestId, { resolve: resolve, reject: reject, timer: timer, found: [] });
+        const status = loaded.runtime.ccall("net_discover", "number", ["number", "number", "number"],
+          [requestId, DISCOVERY_PORT, DISCOVERY_TIMEOUT_MS]);
+        if (status !== 0) {
+          sender.finishDiscovery(requestId, status);
+        }
+      });
+    });
+  };
+
   global.WakeOnLan = {
     MODULE_SCRIPT_URL: MODULE_SCRIPT_URL,
     normalizeMacAddress: normalizeMacAddress,
     create: function (options) { return new WakeOnLanSender(options); },
+    parseDiscoveryReply: parseDiscoveryReply,
     testing: { macAddressBytes: macAddressBytes, buildMagicPacket: buildMagicPacket },
   };
 }(window));

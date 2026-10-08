@@ -39,6 +39,16 @@ function fakeEnvironment(options) {
       }
       global.createWakeOnLanModule = function (runtime) {
         runtime.ccall = function (name, returnType, argumentTypes, args) {
+          if (name === "net_discover") {
+            calls.push({ name: name, requestId: args[0], port: args[1], timeoutMs: args[2] });
+            setTimeout(function () {
+              (settings.replies || []).forEach(function (reply) {
+                runtime.onDiscoveryReply(args[0], reply.address, reply.text);
+              });
+              runtime.onDiscoveryDone(args[0], (settings.replies || []).length, settings.discoveryError || 0);
+            }, 0);
+            return 0;
+          }
           calls.push({ name: name, requestId: args[0], mac: Array.from(args[1]), unicast: args[2] });
           if (settings.queueStatus) {
             return settings.queueStatus;
@@ -99,6 +109,33 @@ async function run() {
   await rejects(retrying.wake("2C:F0:5D:7B:E6:D0"), /could not be loaded/, "a missing module must be reported");
   await rejects(retrying.wake("2C:F0:5D:7B:E6:D0"), /could not be loaded/, "a failed load must be retried");
   assert.strictEqual(flaky.scripts.length, 2, "a failed load must not be cached");
+
+  const reply = JSON.stringify({ version: 2, type: "discovery", name: "PC_Casa", port: 8001, macAddress: "2c-f0-5d-7b-e6-d0" });
+  assert.deepStrictEqual(WakeOnLan.parseDiscoveryReply("192.168.1.85", reply),
+    { host: "192.168.1.85", port: 8001, name: "PC_Casa", macAddress: "2C:F0:5D:7B:E6:D0" },
+    "a discovery reply becomes a PC at the address it came from");
+  assert.strictEqual(WakeOnLan.parseDiscoveryReply("192.168.1.85", "{"), null, "malformed replies are ignored");
+  assert.strictEqual(WakeOnLan.parseDiscoveryReply("192.168.1.85", JSON.stringify({ version: 1, type: "discovery", port: 8000 })), null,
+    "replies from another protocol version are ignored");
+  assert.strictEqual(WakeOnLan.parseDiscoveryReply("192.168.1.85", JSON.stringify({ version: 2, type: "discovery", port: 70000 })), null,
+    "an invalid port is ignored");
+  assert.strictEqual(WakeOnLan.parseDiscoveryReply("fe80::1", reply), null, "only IPv4 sources are PCs to connect to");
+
+  const network = fakeEnvironment({ replies: [
+    { address: "192.168.1.85", text: reply },
+    { address: "192.168.1.85", text: reply },
+    { address: "192.168.1.90", text: JSON.stringify({ version: 2, type: "discovery", name: "Office", port: 8000 }) },
+    { address: "192.168.1.91", text: "not json" },
+  ] });
+  const found = await WakeOnLan.create({ document: network.document }).discover();
+  assert.deepStrictEqual(found.map(function (pc) { return pc.host + ":" + pc.port; }), ["192.168.1.85:8001", "192.168.1.90:8000"],
+    "every PC that answered is found once, and invalid replies are dropped");
+  assert.strictEqual(network.calls[0].port, 8000, "discovery is broadcast to UDP 8000");
+
+  await rejects(WakeOnLan.create({ document: fakeEnvironment({ discoveryError: 13 }).document }).discover(),
+    /discovery failed \(error 13\)/, "a discovery whose socket failed reports the error");
+  assert.deepStrictEqual(await WakeOnLan.create({ document: fakeEnvironment({}).document }).discover(), [],
+    "a network without Sunshine-Web-RTC finds nothing");
 
   console.log("Tizen Wake-on-LAN tests passed");
 }

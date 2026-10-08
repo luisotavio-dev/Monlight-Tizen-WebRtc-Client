@@ -74,6 +74,7 @@ const gatewayEditorHeading = document.getElementById("gateway-editor-heading");
 const gatewayOctetButtons = Array.prototype.slice.call(document.querySelectorAll("[data-octet-index]"));
 const gatewayPortButtons = Array.prototype.slice.call(document.querySelectorAll("[data-port-index]"));
 const gatewayEditorSegments = gatewayOctetButtons.concat(gatewayPortButtons);
+const gatewayEditorDiscovery = document.getElementById("gateway-editor-discovery");
 const gatewayEditorError = document.getElementById("gateway-editor-error");
 const gatewayEditorCancelButton = document.getElementById("gateway-editor-cancel");
 const gatewayEditorConnectButton = document.getElementById("gateway-editor-connect");
@@ -725,6 +726,83 @@ function watchGateway(gateway) {
 
 function probeSavedGateways() {
   savedGateways.forEach(watchGateway);
+}
+
+// Finds PCs running Sunshine-Web-RTC on the local network. With no PC saved yet, every one
+// found is added. A saved PC found at a new address, recognised by its Wake-on-LAN address,
+// moves there and keeps its name and pairing.
+function discoverPcs() {
+  if (!wakeOnLan.isSupported()) {
+    return;
+  }
+  wakeOnLan.discover().then(function (found) {
+    const addAll = gatewayStore.list().length === 0;
+    const added = [];
+    found.forEach(function (pc) {
+      const saved = gatewayStore.list();
+      if (saved.some(function (gateway) { return gateway.host === pc.host && gateway.port === pc.port; })) {
+        return;
+      }
+      const moved = pc.macAddress && saved.find(function (gateway) { return gateway.macAddress === pc.macAddress; });
+      if (moved && (!activeGateway || activeGateway.id !== moved.id)) {
+        stopGatewayWatch(moved.id);
+        gatewayStore.replace(moved.id, Object.assign({}, moved, { host: pc.host, port: pc.port }));
+        log("PC " + moved.name + " moved to " + pc.host + ":" + String(pc.port));
+      } else if (!moved && addAll) {
+        gatewayStore.upsert(pc);
+        added.push(pc.name);
+      }
+    });
+    savedGateways = gatewayStore.list();
+    renderGateways();
+    probeSavedGateways();
+    if (added.length > 0) {
+      log("Found " + added.join(", "));
+      showNotification(added.length === 1 ? "PC found" : "PCs found", added.join(", "), false);
+    }
+  }, function (error) {
+    log("PC discovery unavailable: " + errorMessage(error));
+  });
+}
+
+// Looks for a PC while the editor is open and fills it in, unless the user has started typing.
+function discoverForGatewayEditor() {
+  if (!wakeOnLan.isSupported()) {
+    gatewayEditorDiscovery.hidden = true;
+    return;
+  }
+  const state = gatewayEditorState;
+  gatewayEditorDiscovery.textContent = "Looking for PCs running Sunshine...";
+  gatewayEditorDiscovery.hidden = false;
+  wakeOnLan.discover().then(function (found) {
+    if (gatewayEditorState !== state) {
+      return;
+    }
+    const savedIds = gatewayStore.list().map(function (gateway) { return gateway.id; });
+    const fresh = found.filter(function (pc) { return savedIds.indexOf(pc.host + ":" + String(pc.port)) < 0; });
+    const pc = fresh[0] || null;
+    if (!pc) {
+      gatewayEditorDiscovery.textContent = found.length > 0
+        ? "Every PC found is already saved. Enter another address."
+        : "No PC found automatically. Enter its address.";
+      return;
+    }
+    const others = fresh.length > 1 ? " (" + String(fresh.length - 1) + " more found)" : "";
+    const address = pc.host + (pc.port === GatewayStore.DEFAULT_PORT ? "" : ":" + String(pc.port));
+    if (state.edited) {
+      gatewayEditorDiscovery.textContent = "Found " + pc.name + " at " + address + others + ".";
+      return;
+    }
+    state.octets = GatewayIpv4.parse(pc.host);
+    state.portDigits = portDigitsFor(pc.port);
+    state.discovered = pc;
+    updateGatewayEditor();
+    gatewayEditorDiscovery.textContent = "Found " + pc.name + " at " + address + others + ". Select Connect to add it.";
+  }, function () {
+    if (gatewayEditorState === state) {
+      gatewayEditorDiscovery.textContent = "No PC found automatically. Enter its address.";
+    }
+  });
 }
 
 async function handleGatewayMessage(text) {
@@ -2130,6 +2208,11 @@ function openGatewayEditor(mode, gatewayId) {
   updateGatewayEditor();
   gatewayEditorDialog.hidden = false;
   gatewayEditorSegments[0].focus();
+  if (mode === "add") {
+    discoverForGatewayEditor();
+  } else {
+    gatewayEditorDiscovery.hidden = true;
+  }
 }
 
 function closeGatewayEditor() {
@@ -2165,6 +2248,7 @@ function focusGatewaySegment(index) {
 
 function changeGatewaySegment(direction) {
   const index = selectedGatewaySegmentIndex();
+  gatewayEditorState.edited = true;
   if (index < gatewayOctetButtons.length) {
     gatewayEditorState.octets[index] = GatewayIpv4.adjust(gatewayEditorState.octets[index], direction);
   } else {
@@ -2228,12 +2312,18 @@ function connectGatewayFromEditor() {
     return;
   }
   const previousGateway = gatewayEditorState.previousGateway;
+  const discovered = gatewayEditorState.discovered;
+  const isDiscovered = Boolean(discovered && discovered.host === host && discovered.port === port);
   const candidate = {
     host: host,
     port: port,
     name: previousGateway ? previousGateway.name
-      : "Gateway " + host + (port === GatewayStore.DEFAULT_PORT ? "" : ":" + String(port)),
+      : isDiscovered ? discovered.name
+        : "Gateway " + host + (port === GatewayStore.DEFAULT_PORT ? "" : ":" + String(port)),
   };
+  if (isDiscovered && discovered.macAddress) {
+    candidate.macAddress = discovered.macAddress;
+  }
   // A PC whose address changed keeps its pairing; a different PC rejects it and asks to pair.
   if (previousGateway && previousGateway.clientId) {
     candidate.clientId = previousGateway.clientId;
@@ -3555,5 +3645,6 @@ restoreCachedCapabilities();
 updateInterpolationStatus();
 renderGateways();
 probeSavedGateways();
+discoverPcs();
 document.getElementById("app-version").textContent = UpdateCheck.APP_VERSION;
 setTimeout(checkForUpdate, UPDATE_CHECK_DELAY_MS);
