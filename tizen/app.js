@@ -10,6 +10,19 @@ const durableStorage = DurableStorage.create({
 const preferences = ClientPreferences.create(durableStorage);
 const gatewayStore = GatewayStore.create(durableStorage);
 const wakeOnLan = WakeOnLan.create({ log: function (message) { log(message); } });
+const frameRateSupport = FrameRateSupport.create({
+  mediaCapabilities: navigator.mediaCapabilities,
+  log: function (message) { log(message); },
+});
+// The modes last asked about, so repeated capabilities messages do not ask the TV again.
+let frameRateProbeSignature = "";
+const updateCheck = UpdateCheck.create({
+  storage: durableStorage,
+  fetchJson: fetchJson,
+  log: function (message) { log(message); },
+});
+// Checked shortly after start, so it never delays connecting to the PC.
+const UPDATE_CHECK_DELAY_MS = 10000;
 // How long a woken PC may take to boot and start the Gateway service before the TV gives up.
 const GATEWAY_WAKE_TIMEOUT_MS = 120000;
 // A sleeping PC never answers the TCP handshake, and the retransmissions back off to a minute
@@ -41,6 +54,7 @@ const resolutionSelect = document.getElementById("resolution-select");
 const codecSelect = document.getElementById("codec-select");
 const hdrSelect = document.getElementById("hdr-select");
 const bitrateSelect = document.getElementById("bitrate-select");
+const frameRateSelect = document.getElementById("fps-select");
 const interpolationSelect = document.getElementById("interpolation-select");
 const interpolationStatusElement = document.getElementById("interpolation-status");
 const interpolationCanvas = document.getElementById("interpolation-canvas");
@@ -58,6 +72,9 @@ const switchConfirmButton = document.getElementById("switch-confirm-button");
 const gatewayEditorDialog = document.getElementById("gateway-editor-dialog");
 const gatewayEditorHeading = document.getElementById("gateway-editor-heading");
 const gatewayOctetButtons = Array.prototype.slice.call(document.querySelectorAll("[data-octet-index]"));
+const gatewayPortButtons = Array.prototype.slice.call(document.querySelectorAll("[data-port-index]"));
+const gatewayEditorSegments = gatewayOctetButtons.concat(gatewayPortButtons);
+const gatewayEditorDiscovery = document.getElementById("gateway-editor-discovery");
 const gatewayEditorError = document.getElementById("gateway-editor-error");
 const gatewayEditorCancelButton = document.getElementById("gateway-editor-cancel");
 const gatewayEditorConnectButton = document.getElementById("gateway-editor-connect");
@@ -243,6 +260,43 @@ function errorMessage(error) {
 function setHomeMessage(message, isError) {
   homeMessage.textContent = message;
   homeMessage.classList.toggle("error", Boolean(isError));
+}
+
+// XMLHttpRequest rather than fetch, which older Tizen runtimes lack.
+function fetchJson(url) {
+  return new Promise(function (resolve, reject) {
+    const request = new XMLHttpRequest();
+    request.open("GET", url);
+    request.timeout = 15000;
+    request.setRequestHeader("Accept", "application/vnd.github+json");
+    request.onload = function () {
+      if (request.status < 200 || request.status >= 300) {
+        reject(new Error("HTTP " + request.status));
+        return;
+      }
+      try {
+        resolve(JSON.parse(request.responseText));
+      } catch (error) {
+        reject(error);
+      }
+    };
+    request.onerror = function () { reject(new Error("network error")); };
+    request.ontimeout = function () { reject(new Error("timed out")); };
+    request.send();
+  });
+}
+
+// A Tizen app cannot install itself, so a newer release is announced with how to install it.
+function checkForUpdate() {
+  updateCheck.check().then(function (release) {
+    if (!release) {
+      return;
+    }
+    log("Moonlight WebRTC " + release.version + " is available");
+    showNotification("Update available",
+      "Moonlight WebRTC " + release.version + " is out. Install it with Apps2Samsung from "
+        + UpdateCheck.RELEASES_PAGE + ".", false);
+  });
 }
 
 function showNotification(title, message, isError) {
@@ -674,6 +728,83 @@ function probeSavedGateways() {
   savedGateways.forEach(watchGateway);
 }
 
+// Finds PCs running Sunshine-Web-RTC on the local network. With no PC saved yet, every one
+// found is added. A saved PC found at a new address, recognised by its Wake-on-LAN address,
+// moves there and keeps its name and pairing.
+function discoverPcs() {
+  if (!wakeOnLan.isSupported()) {
+    return;
+  }
+  wakeOnLan.discover().then(function (found) {
+    const addAll = gatewayStore.list().length === 0;
+    const added = [];
+    found.forEach(function (pc) {
+      const saved = gatewayStore.list();
+      if (saved.some(function (gateway) { return gateway.host === pc.host && gateway.port === pc.port; })) {
+        return;
+      }
+      const moved = pc.macAddress && saved.find(function (gateway) { return gateway.macAddress === pc.macAddress; });
+      if (moved && (!activeGateway || activeGateway.id !== moved.id)) {
+        stopGatewayWatch(moved.id);
+        gatewayStore.replace(moved.id, Object.assign({}, moved, { host: pc.host, port: pc.port }));
+        log("PC " + moved.name + " moved to " + pc.host + ":" + String(pc.port));
+      } else if (!moved && addAll) {
+        gatewayStore.upsert(pc);
+        added.push(pc.name);
+      }
+    });
+    savedGateways = gatewayStore.list();
+    renderGateways();
+    probeSavedGateways();
+    if (added.length > 0) {
+      log("Found " + added.join(", "));
+      showNotification(added.length === 1 ? "PC found" : "PCs found", added.join(", "), false);
+    }
+  }, function (error) {
+    log("PC discovery unavailable: " + errorMessage(error));
+  });
+}
+
+// Looks for a PC while the editor is open and fills it in, unless the user has started typing.
+function discoverForGatewayEditor() {
+  if (!wakeOnLan.isSupported()) {
+    gatewayEditorDiscovery.hidden = true;
+    return;
+  }
+  const state = gatewayEditorState;
+  gatewayEditorDiscovery.textContent = "Looking for PCs running Sunshine...";
+  gatewayEditorDiscovery.hidden = false;
+  wakeOnLan.discover().then(function (found) {
+    if (gatewayEditorState !== state) {
+      return;
+    }
+    const savedIds = gatewayStore.list().map(function (gateway) { return gateway.id; });
+    const fresh = found.filter(function (pc) { return savedIds.indexOf(pc.host + ":" + String(pc.port)) < 0; });
+    const pc = fresh[0] || null;
+    if (!pc) {
+      gatewayEditorDiscovery.textContent = found.length > 0
+        ? "Every PC found is already saved. Enter another address."
+        : "No PC found automatically. Enter its address.";
+      return;
+    }
+    const others = fresh.length > 1 ? " (" + String(fresh.length - 1) + " more found)" : "";
+    const address = pc.host + (pc.port === GatewayStore.DEFAULT_PORT ? "" : ":" + String(pc.port));
+    if (state.edited) {
+      gatewayEditorDiscovery.textContent = "Found " + pc.name + " at " + address + others + ".";
+      return;
+    }
+    state.octets = GatewayIpv4.parse(pc.host);
+    state.portDigits = portDigitsFor(pc.port);
+    state.discovered = pc;
+    updateGatewayEditor();
+    gatewayEditorDiscovery.textContent = "Found " + pc.name + " at " + address + others + ". Select Connect to add it.";
+  }, function () {
+    if (gatewayEditorState === state) {
+      gatewayEditorDiscovery.textContent = "No PC found automatically. Enter its address.";
+    }
+  });
+}
+
 async function handleGatewayMessage(text) {
   let message;
   try {
@@ -932,6 +1063,8 @@ function currentPreferenceValues() {
     hdr: hdrSelect.value === "true",
     bitrateKbps: Number.isInteger(Number(bitrateSelect.value))
       ? Number(bitrateSelect.value) : null,
+    frameRate: Number.isInteger(Number(frameRateSelect.value)) && Number(frameRateSelect.value) > 0
+      ? Number(frameRateSelect.value) : null,
     frameInterpolation: interpolationSelect.value === "true",
   };
 }
@@ -999,6 +1132,48 @@ function applyCapabilities(message) {
   codecSelectionWasIntentional = Boolean(savedPreferences.codec);
   applySelectedVideoMode(savedPreferences);
   persistCurrentPreferences();
+  probeFrameRates();
+}
+
+// Asks the TV which frame rates it sustains for every mode and codec, then refreshes the menu.
+function probeFrameRates() {
+  const modes = videoModes.map(function (mode) {
+    return Object.assign({}, mode, { codecs: (mode.codecs || []).filter(tvCanReceiveVideoCodec) });
+  });
+  const signature = JSON.stringify(modes);
+  if (modes.length === 0 || signature === frameRateProbeSignature) {
+    return;
+  }
+  frameRateProbeSignature = signature;
+  frameRateSupport.probe(modes).then(function () {
+    updateFrameRateOptions(selectedVideoMode(), savedPreferences.frameRate);
+    persistCurrentPreferences();
+  });
+}
+
+// The TV's own maximum when it announces one; otherwise every rate the PC offers, to choose from.
+function updateFrameRateOptions(mode, preferredRate) {
+  if (!mode) {
+    return;
+  }
+  const rates = FrameRateSupport.frameRatesOf(mode);
+  const maximum = frameRateSupport.maximumRate(mode, codecSelect.value);
+  if (maximum !== null) {
+    const allowed = rates.filter(function (rate) { return rate <= maximum; });
+    const rate = allowed.length > 0 ? Math.max.apply(null, allowed) : Math.min.apply(null, rates);
+    replaceSelectOptions(frameRateSelect, [rate], {
+      value: function (value) { return String(value); },
+      label: function (value) { return String(value) + " fps — TV maximum"; },
+    });
+    frameRateSelect.value = String(rate);
+    return;
+  }
+  const previousRate = typeof preferredRate === "number" ? preferredRate : Number(frameRateSelect.value);
+  replaceSelectOptions(frameRateSelect, rates, {
+    value: function (value) { return String(value); },
+    label: function (value) { return String(value) + " fps"; },
+  });
+  selectSavedOrDefault(frameRateSelect, previousRate, rates.indexOf(60) >= 0 ? "60" : String(rates[0]));
 }
 
 function selectedVideoMode() {
@@ -1082,6 +1257,7 @@ function applySelectedVideoMode(preferencesToRestore) {
   codecSelect.value = keepIntentionalCodec ? previousCodec : mode.defaultCodec;
   updatingCodecOptions = false;
   updateHdrOptions(mode, preferencesToRestore ? preferencesToRestore.hdr : undefined);
+  updateFrameRateOptions(mode, preferencesToRestore ? preferencesToRestore.frameRate : undefined);
   selectSavedOrDefault(
     bitrateSelect,
     preferencesToRestore ? preferencesToRestore.bitrateKbps : null,
@@ -1358,7 +1534,7 @@ function selectedSettings() {
     appTitle: appSelect.options[appSelect.selectedIndex].textContent,
     width: Number(dimensions[0]),
     height: Number(dimensions[1]),
-    fps: 60,
+    fps: Number(frameRateSelect.value) || 60,
     codec: codecSelect.value,
     bitrateKbps: Number(bitrateSelect.value),
     hdr: hdrSelect.value === "true",
@@ -2002,6 +2178,13 @@ function updateGatewayEditor() {
   gatewayOctetButtons.forEach(function (button, index) {
     button.textContent = String(gatewayEditorState.octets[index]);
   });
+  gatewayPortButtons.forEach(function (button, index) {
+    button.textContent = String(gatewayEditorState.portDigits[index]);
+  });
+}
+
+function portDigitsFor(port) {
+  return ("00000" + String(port)).slice(-5).split("").map(Number);
 }
 
 function setGatewayEditorError(message) {
@@ -2016,14 +2199,20 @@ function openGatewayEditor(mode, gatewayId) {
     previousId: previousGateway ? previousGateway.id : null,
     previousGateway: previousGateway,
     octets: octetsForHost(previousGateway ? previousGateway.host : ""),
-    selectedOctet: 0,
+    portDigits: portDigitsFor(previousGateway ? previousGateway.port : GatewayStore.DEFAULT_PORT),
+    selectedSegment: 0,
   };
   gatewayEditorHeading.textContent = mode === "edit" ? "Edit Gateway" : "Add Gateway";
   gatewayEditorConnectButton.textContent = mode === "edit" ? "Save / Connect" : "Connect";
   setGatewayEditorError("");
   updateGatewayEditor();
   gatewayEditorDialog.hidden = false;
-  gatewayOctetButtons[0].focus();
+  gatewayEditorSegments[0].focus();
+  if (mode === "add") {
+    discoverForGatewayEditor();
+  } else {
+    gatewayEditorDiscovery.hidden = true;
+  }
 }
 
 function closeGatewayEditor() {
@@ -2044,24 +2233,30 @@ function closeGatewayEditor() {
   return true;
 }
 
-function selectedGatewayOctetIndex() {
-  const active = document.activeElement;
-  const index = gatewayOctetButtons.indexOf(active);
-  return index >= 0 ? index : (gatewayEditorState ? gatewayEditorState.selectedOctet : 0);
+// The editor's segments, in the order left and right walk them: the four IPv4 octets, then the
+// five port digits.
+function selectedGatewaySegmentIndex() {
+  const index = gatewayEditorSegments.indexOf(document.activeElement);
+  return index >= 0 ? index : (gatewayEditorState ? gatewayEditorState.selectedSegment : 0);
 }
 
-function focusGatewayOctet(index) {
-  const normalized = Math.max(0, Math.min(gatewayOctetButtons.length - 1, index));
-  gatewayEditorState.selectedOctet = normalized;
-  gatewayOctetButtons[normalized].focus();
+function focusGatewaySegment(index) {
+  const normalized = Math.max(0, Math.min(gatewayEditorSegments.length - 1, index));
+  gatewayEditorState.selectedSegment = normalized;
+  gatewayEditorSegments[normalized].focus();
 }
 
-function changeGatewayOctet(direction) {
-  const index = selectedGatewayOctetIndex();
-  const value = gatewayEditorState.octets[index];
-  gatewayEditorState.octets[index] = GatewayIpv4.adjust(value, direction);
+function changeGatewaySegment(direction) {
+  const index = selectedGatewaySegmentIndex();
+  gatewayEditorState.edited = true;
+  if (index < gatewayOctetButtons.length) {
+    gatewayEditorState.octets[index] = GatewayIpv4.adjust(gatewayEditorState.octets[index], direction);
+  } else {
+    const digit = index - gatewayOctetButtons.length;
+    gatewayEditorState.portDigits[digit] = (gatewayEditorState.portDigits[digit] + (direction >= 0 ? 1 : 9)) % 10;
+  }
   updateGatewayEditor();
-  focusGatewayOctet(index);
+  focusGatewaySegment(index);
 }
 
 function navigateGatewayEditor(direction) {
@@ -2071,15 +2266,15 @@ function navigateGatewayEditor(direction) {
   // Up and down change the selected segment; left and right walk the segments, then Connect
   // and Cancel, so a value is never left by pressing down to decrement it.
   const active = document.activeElement;
-  const octetIndex = gatewayOctetButtons.indexOf(active);
-  if (octetIndex >= 0) {
-    gatewayEditorState.selectedOctet = octetIndex;
+  const segmentIndex = gatewayEditorSegments.indexOf(active);
+  if (segmentIndex >= 0) {
+    gatewayEditorState.selectedSegment = segmentIndex;
     if (direction === "up" || direction === "down") {
-      changeGatewayOctet(direction === "up" ? 1 : -1);
+      changeGatewaySegment(direction === "up" ? 1 : -1);
     } else if (direction === "left") {
-      focusGatewayOctet(octetIndex - 1);
-    } else if (octetIndex + 1 < gatewayOctetButtons.length) {
-      focusGatewayOctet(octetIndex + 1);
+      focusGatewaySegment(segmentIndex - 1);
+    } else if (segmentIndex + 1 < gatewayEditorSegments.length) {
+      focusGatewaySegment(segmentIndex + 1);
     } else {
       gatewayEditorConnectButton.focus();
     }
@@ -2089,7 +2284,7 @@ function navigateGatewayEditor(direction) {
     if (direction === "left") {
       gatewayEditorCancelButton.focus();
     } else if (direction === "up") {
-      focusGatewayOctet(gatewayEditorState.selectedOctet);
+      focusGatewaySegment(gatewayEditorState.selectedSegment);
     }
     return true;
   }
@@ -2097,9 +2292,9 @@ function navigateGatewayEditor(direction) {
     if (direction === "right") {
       gatewayEditorConnectButton.focus();
     } else if (direction === "left") {
-      focusGatewayOctet(gatewayOctetButtons.length - 1);
+      focusGatewaySegment(gatewayEditorSegments.length - 1);
     } else if (direction === "up") {
-      focusGatewayOctet(gatewayEditorState.selectedOctet);
+      focusGatewaySegment(gatewayEditorState.selectedSegment);
     }
     return true;
   }
@@ -2111,12 +2306,24 @@ function connectGatewayFromEditor() {
     return;
   }
   const host = GatewayIpv4.format(gatewayEditorState.octets);
+  const port = Number(gatewayEditorState.portDigits.join(""));
+  if (port < 1 || port > 65535) {
+    setGatewayEditorError("The port must be between 1 and 65535.");
+    return;
+  }
   const previousGateway = gatewayEditorState.previousGateway;
+  const discovered = gatewayEditorState.discovered;
+  const isDiscovered = Boolean(discovered && discovered.host === host && discovered.port === port);
   const candidate = {
     host: host,
-    port: GatewayStore.DEFAULT_PORT,
-    name: previousGateway ? previousGateway.name : "Gateway " + host,
+    port: port,
+    name: previousGateway ? previousGateway.name
+      : isDiscovered ? discovered.name
+        : "Gateway " + host + (port === GatewayStore.DEFAULT_PORT ? "" : ":" + String(port)),
   };
+  if (isDiscovered && discovered.macAddress) {
+    candidate.macAddress = discovered.macAddress;
+  }
   // A PC whose address changed keeps its pairing; a different PC rejects it and asks to pair.
   if (previousGateway && previousGateway.clientId) {
     candidate.clientId = previousGateway.clientId;
@@ -2585,7 +2792,7 @@ function activateFocusedControl() {
       return true;
     }
     // OK on a segment moves on, ending on Connect, as the right arrow does.
-    if (gatewayOctetButtons.indexOf(active) >= 0) {
+    if (gatewayEditorSegments.indexOf(active) >= 0) {
       return navigateGatewayEditor("right");
     }
     return false;
@@ -2778,8 +2985,10 @@ codecSelect.addEventListener("change", function () {
     hdrSelect.value = "false";
   }
   updateHdrOptions(selectedVideoMode());
+  updateFrameRateOptions(selectedVideoMode());
   persistCurrentPreferences();
 });
+frameRateSelect.addEventListener("change", persistCurrentPreferences);
 hdrSelect.addEventListener("change", function () {
   const mode = selectedVideoMode();
   // Turning HDR on keeps an HDR-capable codec (HEVC or AV1) and otherwise switches to HEVC.
@@ -3378,10 +3587,10 @@ ui = TizenUi.create({
   onAddGateway: function () { openGatewayEditor("add"); },
   hasActiveGateway: function () { return Boolean(activeGateway && gatewayConnected); },
 });
-gatewayOctetButtons.forEach(function (button, index) {
+gatewayEditorSegments.forEach(function (button, index) {
   button.addEventListener("click", function () {
     if (gatewayEditorState) {
-      focusGatewayOctet(index);
+      focusGatewaySegment(index);
     }
   });
 });
@@ -3436,3 +3645,6 @@ restoreCachedCapabilities();
 updateInterpolationStatus();
 renderGateways();
 probeSavedGateways();
+discoverPcs();
+document.getElementById("app-version").textContent = UpdateCheck.APP_VERSION;
+setTimeout(checkForUpdate, UPDATE_CHECK_DELAY_MS);

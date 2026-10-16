@@ -71,9 +71,17 @@ assert.ok(html.includes('id="add-gateway-card"') === false && html.includes('id=
   "the Gateway list must be rendered from persisted data rather than a hard-coded card");
 assert.ok(html.includes('id="gateway-editor-dialog"') && html.includes('data-octet-index="3"'),
   "manual Gateway setup requires the four-octet IPv4 editor");
-assert.ok(appSource.includes('changeGatewayOctet(direction === "up" ? 1 : -1);')
+assert.ok(appSource.includes('changeGatewaySegment(direction === "up" ? 1 : -1);')
   && !appSource.includes('if (direction === "down") { gatewayEditorCancelButton.focus(); return true; }'),
   "in the IPv4 editor the down arrow decrements the segment instead of leaving it for the buttons");
+assert.ok(html.includes('data-port-index="4"') && appSource.includes("port: port,")
+  && appSource.includes("The port must be between 1 and 65535."),
+  "the PC editor must let the port be changed, since Sunshine's webrtc_port is configurable");
+assert.ok(appSource.includes("discoverPcs();") && appSource.includes("function discoverForGatewayEditor()")
+  && html.includes('id="gateway-editor-discovery"'),
+  "PCs running Sunshine-Web-RTC are found on the network at startup and when adding one");
+assert.ok(appSource.includes("if (state.edited) {") && appSource.includes("gatewayEditorState.edited = true;"),
+  "a PC found while the user is typing an address must not overwrite it");
 assert.ok(uiSource.includes("this.ensureGatewayFocus();"),
   "the first selectable gateway must receive initial focus when it becomes available");
 assert.ok(uiSource.includes("TizenUi.prototype.focusSettingsCategory"),
@@ -213,24 +221,26 @@ function storage() {
 const persistentStorage = storage();
 const preferences = global.ClientPreferences.create(persistentStorage);
 assert.deepStrictEqual(preferences.load(), {
-  resolution: null, codec: null, hdr: false, bitrateKbps: null, frameInterpolation: false,
+  resolution: null, codec: null, hdr: false, bitrateKbps: null, frameRate: null, frameInterpolation: false,
 }, "empty storage must use the current defaults");
 preferences.update("resolution", "3840x2160");
 preferences.update("codec", "hevc");
 preferences.update("hdr", true);
 preferences.update("bitrateKbps", 50000);
+preferences.update("frameRate", 120);
 preferences.update("frameInterpolation", true);
 assert.deepStrictEqual(global.ClientPreferences.create(persistentStorage).load(), {
   resolution: "3840x2160", codec: "hevc", hdr: true, bitrateKbps: 50000,
-  frameInterpolation: true,
+  frameRate: 120, frameInterpolation: true,
 }, "saved preferences must survive a simulated application reload");
-assert.ok(!Object.prototype.hasOwnProperty.call(preferences.snapshot(), "fps"),
-  "FPS must not become a persisted selectable preference");
+assert.ok(appSource.includes("fps: Number(frameRateSelect.value) || 60,")
+  && html.includes('id="fps-select"') && html.indexOf('src="frame-rate-support.js"') >= 0,
+  "the frame rate comes from Settings: the TV's maximum when it announces one, otherwise the user's choice");
 persistentStorage.setItem(global.ClientPreferences.STORAGE_KEY, JSON.stringify({
-  resolution: 4, codec: false, hdr: "true", bitrateKbps: -1, frameInterpolation: "yes",
+  resolution: 4, codec: false, hdr: "true", bitrateKbps: -1, frameRate: "120", frameInterpolation: "yes",
 }));
 assert.deepStrictEqual(global.ClientPreferences.create(persistentStorage).load(), {
-  resolution: null, codec: null, hdr: false, bitrateKbps: null, frameInterpolation: false,
+  resolution: null, codec: null, hdr: false, bitrateKbps: null, frameRate: null, frameInterpolation: false,
 }, "invalid persisted values must fall back safely");
 assert.strictEqual(global.ClientPreferences.resolveSupported("av1", ["h264", "hevc"], "h264"), "h264",
   "unsupported persisted options must fall back to the current supported default");

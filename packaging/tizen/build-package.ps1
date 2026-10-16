@@ -41,6 +41,7 @@ try {
         'config.xml',
         'durable-storage.js',
         'frame-interpolation.js',
+        'frame-rate-support.js',
         'gamepad-input.js',
         'gamepad-ui-navigation.js',
         'gateway-auth.js',
@@ -51,6 +52,7 @@ try {
         'tizen_web_project.yaml',
         'ui.css',
         'ui.js',
+        'update-check.js',
         'wake-on-lan.js'
     )
     foreach ($runtimeFile in $runtimeFiles) {

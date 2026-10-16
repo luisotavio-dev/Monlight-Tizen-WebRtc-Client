@@ -12,6 +12,38 @@ Protocol version 2 is a JSON protocol carried by a signaling WebSocket on TCP po
 `type`. The WebSocket carries configuration, lifecycle state and WebRTC signaling only. Audio, video and
 realtime gamepad snapshots travel over WebRTC.
 
+## Discovery
+
+A TV finds PCs by broadcasting one UDP datagram to `255.255.255.255`, port **8000**:
+
+```json
+{"version":2,"type":"discover"}
+```
+
+The datagram always goes to port 8000, whatever `webrtc_port` is. Every Sunshine-Web-RTC on the network
+segment with its WebRTC server enabled answers the sender directly:
+
+```json
+{"version":2,"type":"discovery","name":"Sunshine-PC","port":8000,"macAddress":"2C:F0:5D:7B:E6:D0"}
+```
+
+- The PC's address is the reply's source address.
+- `port` is the signaling port to connect to.
+- `macAddress` is the Wake-on-LAN address described below, and is omitted when unknown.
+
+Sunshine answers only loopback, private, link-local and unique local addresses. Its reply is about as small
+as the request, so it cannot be used to reflect traffic.
+
+The TV broadcasts from its WebAssembly module (see Wake-on-LAN below) and collects replies for two seconds:
+
+- **No PC saved:** every PC found is added.
+- **Adding a PC:** the first PC found that is not saved yet is filled in, unless the user has started
+  editing the address.
+- **A saved PC found at a new address** is recognised by its `macAddress`. It moves to that address and keeps
+  its name and pairing.
+
+Broadcasts do not cross routers, so a PC on another subnet is added by address.
+
 ## TV authentication
 
 Every TV must pair once before Sunshine serves it.
@@ -139,19 +171,29 @@ library once `gateway-status` arrives.
 Sunshine also sends `capabilities`, which lists explicit `videoModes` so the TV never has to infer a
 resolution and codec combination. Each mode contains:
 
-- `width`, `height` and `fps`;
+- `width` and `height`;
+- `frameRates`, the frame rates the mode may stream at (30, 60, 90 and 120), and `fps`, always 60, for TV
+  apps from before frame-rate selection;
 - `codecs`, `hdrCodecs` and `defaultCodec`;
 - `defaultBitrateKbps`;
 - `experimental`, `hdrSupported` and `hdrExperimental`.
 
 `hdrCodecs` lists the codecs of `codecs` that may be combined with HDR in that mode.
 
-| Mode | Codecs | HDR | Default | Default bitrate | Experimental |
-| --- | --- | --- | --- | ---: | --- |
-| 1280x720 @ 60 | H.264, HEVC, AV1 | Off | H.264 | 12000 kbps | No |
-| 1920x1080 @ 60 | H.264, HEVC, AV1 | Off, On | H.264 | 20000 kbps | HDR only |
-| 2560x1440 @ 60 | H.264, HEVC, AV1 | Off, On | HEVC | 30000 kbps | Yes |
-| 3840x2160 @ 60 | HEVC, AV1 | Off, On | HEVC | 50000 kbps | HDR only |
+| Mode | Frame rates | Codecs | HDR | Default | Default bitrate | Experimental |
+| --- | --- | --- | --- | --- | ---: | --- |
+| 1280x720 | 30, 60, 90, 120 | H.264, HEVC, AV1 | Off | H.264 | 12000 kbps | No |
+| 1920x1080 | 30, 60, 90, 120 | H.264, HEVC, AV1 | Off, On | H.264 | 20000 kbps | HDR only |
+| 2560x1440 | 30, 60, 90, 120 | H.264, HEVC, AV1 | Off, On | HEVC | 30000 kbps | Yes |
+| 3840x2160 | 30, 60, 90, 120 | HEVC, AV1 | Off, On | HEVC | 50000 kbps | HDR only |
+
+The TV picks the frame rate itself:
+
+1. It asks its decoder, through Media Capabilities, which rates it sustains smoothly for each mode and
+   codec. It tries WebRTC-type queries first and falls back to Media Source.
+2. It streams at the highest rate the decoder sustains.
+3. A TV that announces nothing, or that accepts even 4K at 240 fps and so is not weighing the frame rate,
+   offers the frame rates to choose from in Settings instead.
 
 AV1 depends on the GPU encoder:
 
@@ -163,7 +205,7 @@ when a hardware encoder appears after the first probe. The TV further hides AV1 
 `RTCRtpReceiver.getCapabilities("video")` does not list `video/AV1`.
 
 The selectable bitrates are 10000, 12000, 15000, 20000, 25000, 30000, 40000, 50000, 60000, 80000 and 100000
-kbps. HDR defaults to off. Audio is stereo Opus at 48 kHz and the frame rate is fixed at 60 fps. The whole
+kbps. HDR defaults to off. Audio is stereo Opus at 48 kHz. The whole
 1440p mode, including HDR, is experimental because Samsung does not list it in the official Cloud Gaming
 resolution table.
 
@@ -209,7 +251,7 @@ Missing or unsupported artwork returns `"available":false`, and the TV keeps its
   "video": {
     "width": 3840,
     "height": 2160,
-    "fps": 60,
+    "fps": 120,
     "codec": "hevc",
     "bitrateKbps": 50000,
     "hdr": true
@@ -218,7 +260,7 @@ Missing or unsupported artwork returns `"available":false`, and the TV keeps its
 }
 ```
 
-`codec` is exactly `"h264"`, `"hevc"` or `"av1"`.
+`fps` is one of the mode's `frameRates`. `codec` is exactly `"h264"`, `"hevc"` or `"av1"`.
 
 | Codec | `hdr: false` | `hdr: true` |
 | --- | --- | --- |
@@ -241,8 +283,9 @@ exits on the host, the session ends with an error too.
 
 ### SDP
 
-For HEVC HDR, the SDP format parameters explicitly request Main10 (`profile-id=2`), Main tier, and level
-4.1 at 1080p60, level 5.0 at 1440p60 or level 5.1 at 4K60. Sunshine rejects the session if the Tizen answer
+For HEVC HDR, the SDP format parameters explicitly request Main10 (`profile-id=2`), Main tier, and the
+lowest level that holds the stream's picture size and frame rate. For example, that is level 4.1 at 1080p60,
+5.0 at 1440p60 or 1080p120, 5.1 at 4K60 or 1440p120, and 5.2 at 4K120. Sunshine rejects the session if the Tizen answer
 does not preserve that profile, rather than sending Main10 under a Main 8-bit negotiation.
 
 The standard WebRTC RTP colour-space extension is offered for HDR but never transmitted. On this Samsung

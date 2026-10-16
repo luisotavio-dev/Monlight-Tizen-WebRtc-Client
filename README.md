@@ -2,7 +2,7 @@
 
 ### Sunshine game streaming for Samsung Tizen TVs — straight from Sunshine
 
-**Moonlight WebRTC streams games from your PC to a Samsung TV at up to 4K 60 FPS with HDR, HEVC, AV1, gamepad support, rumble and a TV-first interface. The TV talks directly to [Sunshine-Web-RTC](https://github.com/mlopezsegura/Sunshine-Web-RTC), a Sunshine build that serves WebRTC itself, so nothing else runs between the game and the TV.**
+**Moonlight WebRTC streams games from your PC to a Samsung TV at up to 4K, up to 120 FPS, with HDR, HEVC, AV1, gamepad support, rumble and a TV-first interface. The TV talks directly to [Sunshine-Web-RTC](https://github.com/mlopezsegura/Sunshine-Web-RTC), a Sunshine build that serves WebRTC itself, so nothing else runs between the game and the TV.**
 
 > [!NOTE]
 > **This project is based on [Moonlight WebRTC by tsoas](https://github.com/tsoas/moonlight-webrtc-tizen).**
@@ -15,7 +15,7 @@
 
 ![Moonlight WebRTC application library](docs/images/apps.png)
 
-**4K 60 FPS · HDR · HEVC Main10 · AV1 · H.264 · Opus audio · Gamepad + rumble · No video transcoding**
+**4K · up to 120 FPS · HDR · HEVC Main10 · AV1 · H.264 · Opus audio · Gamepad + rumble · No video transcoding**
 
 ---
 
@@ -148,9 +148,13 @@ The session lifecycle behaves like a normal Moonlight client rather than simply 
 
 ---
 
-## 📺 Up to 4K 60 FPS
+## 📺 Up to 4K and up to 120 FPS
 
-Streams run at **60 FPS** in several resolution and codec combinations.
+Every resolution can stream at **30, 60, 90 or 120 FPS**:
+
+- The TV asks its own decoder which frame rates it sustains for each resolution and codec, and streams at the
+  highest one. A 120 Hz TV gets 120 FPS; a 60 Hz one stays at 60.
+- When the TV does not announce its maximum, **Frame rate** in Settings lets you choose.
 
 | Codec | 720p | 1080p | 1440p | 4K |
 |---|:---:|:---:|:---:|:---:|
@@ -231,14 +235,17 @@ It includes:
 - multiple saved PCs;
 - online/offline status for each PC;
 - Wake-on-LAN for a sleeping or powered-off PC;
-- remote-friendly IPv4 editing;
+- PCs running Sunshine-Web-RTC found automatically on the local network;
+- remote-friendly address and port editing;
+- frame rate, from the TV's own maximum;
 - Sunshine application artwork;
 - resolution selection;
 - codec selection;
 - HDR selection;
 - bitrate configuration;
 - stream controls;
-- launch and resume progress feedback.
+- launch and resume progress feedback;
+- a notice when a new version is published.
 
 No keyboard is required for normal use. The app still labels each PC a "Gateway"; that name predates the
 architecture change.
@@ -289,8 +296,10 @@ Install Sunshine-Web-RTC and complete Sunshine's usual first-run setup. Its
 [guide](https://github.com/mlopezsegura/Sunshine-Web-RTC/blob/master/docs/moonlight_webrtc_tizen.md) covers
 building and installing it.
 
-The TV connects to **TCP port 8000**. Keep Sunshine's `webrtc_port` option at its default of 8000, and make
-sure nothing else, such as the retired Moonlight WebRTC Gateway service, uses that port.
+The TV connects to the PC on **TCP port 8000**, Sunshine's default `webrtc_port`, and finds it by
+broadcasting to **UDP port 8000**. Make sure nothing else uses those ports, such as the retired Moonlight
+WebRTC Gateway service. If you change `webrtc_port`, PCs found automatically use the new port, and a PC
+added by hand needs it entered on the TV.
 
 ## 2 — Install the Samsung TV application
 
@@ -299,9 +308,10 @@ and install it with Apps2Samsung, as described in [Installing on the TV](#instal
 
 ## 3 — Add your PC and pair
 
-1. Open Moonlight WebRTC on the TV and select **Add Gateway**.
-2. Enter the LAN IPv4 address of the PC running Sunshine-Web-RTC. The TV and the PC must be on the same
-   local network.
+1. Open Moonlight WebRTC on the TV. The TV looks for PCs running Sunshine-Web-RTC on the local network and
+   adds the ones it finds. If yours does not appear, select **Add Gateway**: the TV searches again and
+   fills in the PC it finds. Otherwise, enter the PC's LAN IPv4 address and port with the arrows.
+2. Select the PC. The TV and the PC must be on the same local network.
 3. The first time, the TV shows a four-digit PIN.
 4. On the PC, open Sunshine's Web UI and go to **PIN**.
 5. Select the TV in the list of devices waiting to pair (it appears as *Samsung TV* with its address).
@@ -360,11 +370,14 @@ Moonlight WebRTC is still under active development.
 
 Current known limitations include:
 
-- streaming is currently fixed at **60 FPS**;
-- PC auto-discovery is not implemented, so PCs are added by IPv4 address;
-- the TV always connects to port 8000;
-- 1440p support is experimental;
-- automatic application updates are not provided.
+- **frame rates above 60 FPS** depend on the TV. They are offered only when the TV's decoder announces them,
+  or when it announces nothing and you choose them;
+- **1440p** is experimental, because Samsung does not list it among its supported game-streaming
+  resolutions;
+- **updates** are announced on the TV but not installed by it: a Tizen app cannot install itself, so new
+  versions are installed with Apps2Samsung;
+- **automatic discovery** finds PCs on the same network segment only, since broadcasts do not cross routers.
+  PCs elsewhere are added by address.
 
 ---
 
@@ -377,7 +390,13 @@ Check that:
 - Sunshine-Web-RTC is running and its log shows `WebRTC: TV server listening on port 8000`;
 - no other program uses port 8000, such as the retired Moonlight WebRTC Gateway service (stop or uninstall
   it);
-- the TV and PC are on the same LAN and the IPv4 address entered on the TV is correct.
+- the TV and PC are on the same LAN and the address and port entered on the TV are correct.
+
+## The TV does not find the PC by itself
+
+Discovery uses a broadcast to UDP port 8000, which Sunshine-Web-RTC answers when its WebRTC server is
+enabled. Some networks block broadcasts, such as guest Wi-Fi, networks with client isolation, or a TV and PC
+on different subnets. In that case, add the PC by its address with **Add Gateway**.
 
 **Do not disable Windows Firewall as a troubleshooting step.**
 
