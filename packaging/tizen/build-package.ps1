@@ -56,7 +56,12 @@ try {
         'wake-on-lan.js'
     )
     foreach ($runtimeFile in $runtimeFiles) {
-        Copy-Item -LiteralPath (Join-Path $projectDirectory $runtimeFile) -Destination $sourceDirectory
+        $runtimePath = Join-Path $projectDirectory $runtimeFile
+        # Tizen Studio writes tizen_web_project.yaml locally; a fresh checkout does not have it.
+        if ($runtimeFile -eq 'tizen_web_project.yaml' -and -not (Test-Path -LiteralPath $runtimePath)) {
+            continue
+        }
+        Copy-Item -LiteralPath $runtimePath -Destination $sourceDirectory
     }
     Copy-Item -LiteralPath (Join-Path $projectDirectory 'assets') -Destination $sourceDirectory -Recurse
     & (Join-Path $PSScriptRoot 'build-wake-on-lan.ps1') -OutputDirectory (Join-Path $sourceDirectory 'wasm') -EmsdkRoot $EmsdkRoot
