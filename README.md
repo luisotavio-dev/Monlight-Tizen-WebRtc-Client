@@ -436,6 +436,11 @@ The protocol between them is described in [docs/protocol.md](docs/protocol.md).
 
 The TV package needs [Samsung's Emscripten SDK](https://developer.samsung.com/smarttv/develop/extension-libraries/webassembly/download.html) (1.39.4.7) to build its Wake-on-LAN WebAssembly module. `packaging/tizen/build-package.ps1` looks for it in `%USERPROFILE%\samsung-emscripten\emscripten-release-bundle\emsdk`; pass `-EmsdkRoot` or set `SAMSUNG_EMSDK` to use another location.
 
+GitHub Actions (`.github/workflows/build.yml`) runs the tests and builds `MoonlightWebRTC.wgt` on every push
+and pull request. To publish a release, set the version in `tizen/config.xml` and `tizen/update-check.js`,
+then push a matching tag, such as `v2.0.0` or `v2.0.0-beta.1` (published as a pre-release). The workflow
+attaches the package and `SHA256SUMS.txt` to the release.
+
 ---
 
 # Acknowledgements

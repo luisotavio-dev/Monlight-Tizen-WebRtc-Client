@@ -1,0 +1,149 @@
+# Tests every push and pull request, builds MoonlightWebRTC.wgt, and publishes it as a GitHub
+# release when a version tag (v2.0.0, v2.1.0-beta.1, ...) is pushed.
+name: Build and release
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run tests
+        shell: bash
+        run: |
+          status=0
+          for test in tests/Tizen*.js; do
+            echo "::group::$test"
+            node "$test" || { echo "::error file=$test::$test failed"; status=1; }
+            echo "::endgroup::"
+          done
+          exit $status
+
+  package:
+    needs: test
+    runs-on: windows-latest
+    env:
+      TIZEN_STUDIO_VERSION: '6.0'
+      TIZEN_STUDIO: C:\tizen-studio
+      # Samsung's Emscripten fork, the only one with Tizen Sockets (used by the Wake-on-LAN module).
+      EMSDK_URL: https://developer.samsung.com/smarttv/file/a5d0e1a8-ef6a-4632-98ba-efb010a4656b
+      EMSDK_SHA256: c07547320d485f9f3d0576f8137c72dcc6c6a1950fc8655c5cda0ac9c5310476
+      EMSDK_DIRECTORY: C:\samsung-emscripten
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches config.xml
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          # Tizen versions have no pre-release part, so v2.1.0-beta.1 is checked against 2.1.0.
+          $tagVersion = '${{ github.ref_name }}' -replace '^v', '' -replace '-.*$', ''
+          [xml]$config = Get-Content -LiteralPath tizen/config.xml -Raw
+          $configVersion = $config.widget.version
+          if ($tagVersion -ne $configVersion) {
+            throw "Tag ${{ github.ref_name }} does not match version $configVersion in tizen/config.xml."
+          }
+
+      - name: Restore Tizen CLI
+        id: tizen-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TIZEN_STUDIO }}
+          key: tizen-web-cli-${{ env.TIZEN_STUDIO_VERSION }}-windows
+
+      - name: Install Tizen CLI
+        if: steps.tizen-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'tizen-web-cli.exe'
+          $url = "https://download.tizen.org/sdk/Installer/tizen-studio_$($env:TIZEN_STUDIO_VERSION)/web-cli_Tizen_Studio_$($env:TIZEN_STUDIO_VERSION)_windows-64.exe"
+          Invoke-WebRequest -Uri $url -OutFile $installer
+          $process = Start-Process -FilePath $installer -ArgumentList '--accept-license', $env:TIZEN_STUDIO -Wait -PassThru -NoNewWindow
+          if ($process.ExitCode -ne 0) {
+            throw "Tizen CLI installer failed with exit code $($process.ExitCode)."
+          }
+
+      - name: Restore Samsung Emscripten SDK
+        id: emsdk-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.EMSDK_DIRECTORY }}
+          key: samsung-emscripten-${{ env.EMSDK_SHA256 }}
+
+      - name: Install Samsung Emscripten SDK
+        if: steps.emsdk-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'emscripten-1.39.4.7-windows64.zip'
+          Invoke-WebRequest -Uri $env:EMSDK_URL -OutFile $archive
+          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $env:EMSDK_SHA256) {
+            throw "Unexpected Emscripten SDK checksum: $hash"
+          }
+          7z x $archive "-o$env:EMSDK_DIRECTORY" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to extract the Emscripten SDK."
+          }
+
+      - name: Build MoonlightWebRTC.wgt
+        shell: pwsh
+        run: |
+          ./packaging/tizen/build-package.ps1 `
+            -TizenCli (Join-Path $env:TIZEN_STUDIO 'tools\ide\bin\tizen.bat') `
+            -EmsdkRoot (Join-Path $env:EMSDK_DIRECTORY 'emscripten-release-bundle\emsdk')
+          ./packaging/release/generate-checksums.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MoonlightWebRTC
+          path: |
+            dist/tizen/MoonlightWebRTC.wgt
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: MoonlightWebRTC
+          path: release
+
+      - name: Publish the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          prerelease=()
+          if [[ "$TAG" == *-* ]]; then prerelease=(--prerelease); fi
+          gh release create "$TAG" \
+            release/tizen/MoonlightWebRTC.wgt \
+            release/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Moonlight WebRTC $TAG" \
+            --generate-notes \
+            --verify-tag \
+            "${prerelease[@]}"
