@@ -9,6 +9,7 @@
     bitrateKbps: null,
     frameRate: null,
     frameInterpolation: false,
+    performanceOverlay: false,
   });
 
   function copyDefaults() {
@@ -19,6 +20,7 @@
       bitrateKbps: DEFAULTS.bitrateKbps,
       frameRate: DEFAULTS.frameRate,
       frameInterpolation: DEFAULTS.frameInterpolation,
+      performanceOverlay: DEFAULTS.performanceOverlay,
     };
   }
 
@@ -44,6 +46,9 @@
     }
     if (typeof candidate.frameInterpolation === "boolean") {
       values.frameInterpolation = candidate.frameInterpolation;
+    }
+    if (typeof candidate.performanceOverlay === "boolean") {
+      values.performanceOverlay = candidate.performanceOverlay;
     }
     return values;
   }

@@ -90,6 +90,15 @@ Sunshine-Web-RTC: capture → encode → WebRTC RTP → TV
   PC, so the encoder gets the bitrate the TV asked for, less only audio and RTP overhead. WebRTC on the LAN
   repairs losses with retransmission and keyframe requests instead.
 - **Faster recovery.** When the TV asks for a keyframe, the request goes directly to Sunshine's encoder.
+- **No waiting for the audio or the jitter buffer.** Sunshine marks every video packet with a zero
+  playout delay, so the TV shows each frame the moment it is decoded instead of buffering it, as Stadia
+  did; the TV also asks for the shortest jitter buffer and does not hold the picture back to stay in
+  sync with the audio, as Moonlight does not either. Screen to screen, 1080p60 dropped from 54 to 38 ms
+  in Sunshine-Web-RTC's latency test.
+- **Latency you can see.** The stream overlay and the top of the statistics panel show the latency from
+  the PC to the screen, drawing included, its session average, and the share of packets lost. The
+  *Performance overlay* setting, also in the stream menu, keeps them fixed at the top right of the stream,
+  with the frames per second actually arriving at the top left.
 - **Nothing extra to install or keep running.** There is no Windows service, tray application or second
   pairing. The TV pairs with Sunshine itself.
 
@@ -435,6 +444,11 @@ Node.js). The server side lives in [Sunshine-Web-RTC](https://github.com/mlopezs
 The protocol between them is described in [docs/protocol.md](docs/protocol.md).
 
 The TV package needs [Samsung's Emscripten SDK](https://developer.samsung.com/smarttv/develop/extension-libraries/webassembly/download.html) (1.39.4.7) to build its Wake-on-LAN WebAssembly module. `packaging/tizen/build-package.ps1` looks for it in `%USERPROFILE%\samsung-emscripten\emscripten-release-bundle\emsdk`; pass `-EmsdkRoot` or set `SAMSUNG_EMSDK` to use another location.
+
+GitHub Actions (`.github/workflows/build.yml`) runs the tests and builds `MoonlightWebRTC.wgt` on every push
+and pull request. To publish a release, set the version in `tizen/config.xml` and `tizen/update-check.js`,
+then push a matching tag, such as `v2.0.0` or `v2.0.0-beta.1` (published as a pre-release). The workflow
+attaches the package and `SHA256SUMS.txt` to the release.
 
 ---
 

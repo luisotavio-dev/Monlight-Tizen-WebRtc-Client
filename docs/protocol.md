@@ -299,6 +299,33 @@ contain that ID, so late signaling from a stopped session can be ignored.
 
 When the TV requests a keyframe (RTCP PLI), Sunshine's encoder produces one directly.
 
+The TV application can also ask for one itself, on the `control` data channel:
+
+```json
+{"v":1,"type":"request-keyframe","reason":"not-decoding"}
+```
+
+It does so when its picture stops advancing for a second while video keeps arriving, a stall the TV's
+WebRTC stack does not always answer with a PLI of its own. `reason` is `not-decoding`, `not-presenting`
+(frames decode but never reach the screen) or `reattached`, and is informative only. If the picture is
+still stopped after 2.5 seconds the application also re-attaches the stream to its video element, which
+rebuilds the renderer without touching the connection. Sunshine logs keyframe requests and IDR frames sent
+at most once a second per session.
+
+## TV log
+
+Once authenticated, the TV forwards its own log to Sunshine about once a second:
+
+```json
+{"version":2,"type":"client-log","lines":["21:04:31.512 Video stalled for 1000 ms ..."]}
+```
+
+Sunshine writes each line into `sunshine.log` as `WebRTC TV <name>: <line>`, so what the TV saw and what the host
+did sit in one file. A message carries at most 100 lines; control characters are replaced and lines longer than
+4000 characters are cut. Besides its normal log the TV sends a stream diagnostics line every five seconds and,
+while the picture is stopped, one line per stall-watchdog sample with its decoder and network counters. A
+Sunshine that does not know the message answers `unsupported-message`, and the TV then stops sending it.
+
 ## Stop a session
 
 ```json
