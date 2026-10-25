@@ -56,6 +56,7 @@ const hdrSelect = document.getElementById("hdr-select");
 const bitrateSelect = document.getElementById("bitrate-select");
 const frameRateSelect = document.getElementById("fps-select");
 const interpolationSelect = document.getElementById("interpolation-select");
+const performanceOverlaySelect = document.getElementById("performance-overlay-select");
 const interpolationStatusElement = document.getElementById("interpolation-status");
 const interpolationCanvas = document.getElementById("interpolation-canvas");
 const settingsSelectorMenu = document.getElementById("settings-selector-menu");
@@ -95,6 +96,7 @@ const gatewayRemoveConfirmButton = document.getElementById("gateway-remove-confi
 const playButton = document.getElementById("play-button");
 const continueButton = document.getElementById("continue-button");
 const diagnosticsButton = document.getElementById("diagnostics-button");
+const performanceOverlayButton = document.getElementById("performance-overlay-button");
 const stopButton = document.getElementById("stop-button");
 const homeMessage = document.getElementById("home-message");
 const gatewayStateElement = document.getElementById("gateway-state");
@@ -113,6 +115,24 @@ const overlay = {
   gamepad: document.getElementById("overlay-gamepad"),
   connection: document.getElementById("overlay-connection"),
   interpolation: document.getElementById("overlay-interpolation"),
+  recovery: document.getElementById("overlay-recovery"),
+  latency: document.getElementById("overlay-latency"),
+  packetLoss: document.getElementById("overlay-packet-loss"),
+};
+
+const performanceHud = {
+  fpsPanel: document.getElementById("performance-fps"),
+  fps: document.getElementById("performance-fps-value"),
+  fpsTarget: document.getElementById("performance-fps-target"),
+  latencyPanel: document.getElementById("performance-latency"),
+  total: document.getElementById("performance-latency-total"),
+  average: document.getElementById("performance-latency-average"),
+  network: document.getElementById("performance-latency-network"),
+  jitterBuffer: document.getElementById("performance-latency-jitter-buffer"),
+  decode: document.getElementById("performance-latency-decode"),
+  toScreen: document.getElementById("performance-latency-to-screen"),
+  packetLoss: document.getElementById("performance-packet-loss"),
+  framesDropped: document.getElementById("performance-frames-dropped"),
 };
 
 const trackCounts = {
@@ -132,6 +152,16 @@ const statistics = {
   receivedTransfer: document.getElementById("received-transfer"),
   receivedBitDepth: document.getElementById("received-bit-depth"),
   receivedHdr: document.getElementById("received-hdr"),
+  latency: {
+    total: document.getElementById("latency-total"),
+    average: document.getElementById("latency-average"),
+    network: document.getElementById("latency-network"),
+    jitterBuffer: document.getElementById("latency-jitter-buffer"),
+    decode: document.getElementById("latency-decode"),
+    toScreen: document.getElementById("latency-to-screen"),
+    packetLoss: document.getElementById("latency-packet-loss"),
+    framesDropped: document.getElementById("latency-frames-dropped"),
+  },
   video: {
     framesReceived: document.getElementById("frames-received"),
     framesDecoded: document.getElementById("frames-decoded"),
@@ -140,6 +170,11 @@ const statistics = {
     packetsReceived: document.getElementById("packets-received"),
     packetsLost: document.getElementById("packets-lost"),
     bytesReceived: document.getElementById("bytes-received"),
+    keyFramesDecoded: document.getElementById("key-frames-decoded"),
+    pliCount: document.getElementById("pli-count"),
+    nackCount: document.getElementById("nack-count"),
+    freezeCount: document.getElementById("freeze-count"),
+    stallRecovery: document.getElementById("stall-recovery"),
   },
   audio: {
     packetsReceived: document.getElementById("audio-packets-received"),
@@ -210,6 +245,15 @@ let lastStatisticsConsoleTime = 0;
 let lastStatisticsSampleTime = 0;
 // Half the console-log period, so that log still lands on its own five-second schedule.
 const HIDDEN_STATISTICS_INTERVAL_MS = 2500;
+// Twice a second: a stall is declared after one second, so a slower sample would let the
+// picture stay black for longer than the watchdog's own threshold.
+const STALL_SAMPLE_INTERVAL_MS = 500;
+const stallWatchdog = StallWatchdog.create();
+let stallSampleInProgress = false;
+let presentedFrames = 0;
+let presentedFrameCallbackPending = false;
+const streamLatency = StreamLatency.create();
+let receiverDelayReported = false;
 let applications = [];
 let ui = null;
 let artworkLoader = null;
@@ -240,8 +284,59 @@ const gatewayWatchers = new Map();
 const GATEWAY_WATCH_GREETING_TIMEOUT_MS = 2500;
 const GATEWAY_WATCH_RETRY_MS = 5000;
 
+// The TV's log, forwarded to the PC: Sunshine writes each line into its own log, next to
+// what it was doing at the same moment, so a stall can be read from one file on the PC
+// without a debugger attached to the TV. Lines wait here while the PC is unreachable; the
+// oldest are dropped first, and how many is reported once the PC is back.
+const REMOTE_LOG_FLUSH_MS = 1000;
+const REMOTE_LOG_MAX_PENDING = 500;
+const REMOTE_LOG_BATCH_LINES = 100;
+let remoteLogLines = [];
+let remoteLogDropped = 0;
+let remoteLogSupported = true;
+
+function remoteLog(message) {
+  if (!remoteLogSupported) {
+    return;
+  }
+  remoteLogLines.push(new Date().toISOString().slice(11, 23) + " " + String(message));
+  if (remoteLogLines.length > REMOTE_LOG_MAX_PENDING) {
+    remoteLogDropped += remoteLogLines.length - REMOTE_LOG_MAX_PENDING;
+    remoteLogLines = remoteLogLines.slice(remoteLogLines.length - REMOTE_LOG_MAX_PENDING);
+  }
+}
+
+function flushRemoteLog() {
+  if (!remoteLogSupported || !gatewayAuthorized || !socket
+      || socket.readyState !== WebSocket.OPEN || remoteLogLines.length === 0) {
+    return;
+  }
+  if (remoteLogDropped > 0) {
+    remoteLogLines.unshift(String(remoteLogDropped) + " TV log line(s) dropped while the PC was unreachable");
+    remoteLogDropped = 0;
+  }
+  while (remoteLogLines.length > 0) {
+    const lines = remoteLogLines.slice(0, REMOTE_LOG_BATCH_LINES);
+    try {
+      sendGatewayMessage({ type: "client-log", lines: lines });
+    } catch (error) {
+      // Kept for the next attempt; reporting it through log() would only queue another line.
+      return;
+    }
+    remoteLogLines = remoteLogLines.slice(lines.length);
+  }
+}
+
+// A Sunshine from before client-log answers it as an unsupported message. That is not an
+// error the viewer needs to see, and it would end a launch in progress.
+function isUnsupportedRemoteLog(message) {
+  return message.code === "unsupported-message"
+    && String(message.message || "").indexOf("client-log") !== -1;
+}
+
 function log(message) {
   console.log(message);
+  remoteLog(message);
   logElement.textContent += message + "\n";
   const lines = logElement.textContent.split("\n");
   if (lines.length > 80) {
@@ -1066,6 +1161,7 @@ function currentPreferenceValues() {
     frameRate: Number.isInteger(Number(frameRateSelect.value)) && Number(frameRateSelect.value) > 0
       ? Number(frameRateSelect.value) : null,
     frameInterpolation: interpolationSelect.value === "true",
+    performanceOverlay: performanceOverlaySelect.value === "true",
   };
 }
 
@@ -1337,6 +1433,12 @@ function setRunningApplication(appId) {
 }
 
 function handleGatewayError(message) {
+  if (isUnsupportedRemoteLog(message)) {
+    remoteLogSupported = false;
+    remoteLogLines = [];
+    console.log("This Sunshine does not accept the TV log; it stays on the TV only");
+    return;
+  }
   if (message.requestType === "authenticate") {
     if (message.code === "client-disabled") {
       handleClientDisabled(message);
@@ -1599,6 +1701,9 @@ function createPeerConnection(sessionId) {
   pendingRemoteCandidates = [];
   previousDecodedSample = null;
   statisticsErrorReported = false;
+  stallWatchdog.reset();
+  streamLatency.reset();
+  updateRecoveryStatus();
 
   try {
     peerConnection = new RTCPeerConnection({ iceServers: [] });
@@ -1661,6 +1766,13 @@ function createPeerConnection(sessionId) {
 
   peerConnection.ontrack = function (event) {
     event.track.enabled = !document.hidden;
+    if (event.track.kind === "video") {
+      const applied = LowLatency.minimizeReceiverDelay(event.receiver);
+      if (!receiverDelayReported) {
+        receiverDelayReported = true;
+        log("Video jitter buffer: " + (applied ? applied + " set to 0" : "the TV allows no target"));
+      }
+    }
     const alreadyAdded = remoteStream.getTracks().some(function (track) {
       return track.id === event.track.id;
     });
@@ -1717,7 +1829,10 @@ async function handleOffer(message) {
   }
 
   try {
-    await peerConnection.setRemoteDescription({ type: "offer", sdp: message.sdp });
+    await peerConnection.setRemoteDescription({
+      type: "offer",
+      sdp: LowLatency.separateAudioSync(message.sdp),
+    });
     while (pendingRemoteCandidates.length > 0) {
       await applyRemoteCandidate(pendingRemoteCandidates.shift());
     }
@@ -1915,6 +2030,25 @@ function handleMouseModeChanged(record, active) {
     "Controller " + String(controller),
     false
   );
+}
+
+function performanceOverlayEnabled() {
+  return performanceOverlaySelect.value === "true";
+}
+
+function applyPerformanceOverlay() {
+  const enabled = performanceOverlayEnabled();
+  performanceHud.fpsPanel.hidden = !enabled;
+  performanceHud.latencyPanel.hidden = !enabled;
+  performanceOverlayButton.textContent = enabled
+    ? "Hide performance overlay"
+    : "Show performance overlay";
+}
+
+function togglePerformanceOverlay() {
+  performanceOverlaySelect.value = performanceOverlayEnabled() ? "false" : "true";
+  persistCurrentPreferences();
+  applyPerformanceOverlay();
 }
 
 function toggleDiagnostics() {
@@ -2968,6 +3102,7 @@ document.addEventListener("keydown", function (event) {
 playButton.addEventListener("click", startSelectedSession);
 continueButton.addEventListener("click", hideStreamMenu);
 diagnosticsButton.addEventListener("click", toggleDiagnostics);
+performanceOverlayButton.addEventListener("click", togglePerformanceOverlay);
 stopButton.addEventListener("click", stopCurrentSession);
 resumeSessionButton.addEventListener("click", resumeRunningApplication);
 stopHostSessionButton.addEventListener("click", stopRunningApplication);
@@ -3005,6 +3140,10 @@ hdrSelect.addEventListener("change", function () {
   persistCurrentPreferences();
 });
 bitrateSelect.addEventListener("change", persistCurrentPreferences);
+performanceOverlaySelect.addEventListener("change", function () {
+  persistCurrentPreferences();
+  applyPerformanceOverlay();
+});
 interpolationSelect.addEventListener("change", function () {
   persistCurrentPreferences();
   applyFrameInterpolation();
@@ -3461,7 +3600,7 @@ async function updateStatistics() {
   // hidden because it also emits the five-second stream diagnostics line, so it slows to
   // the slowest cadence that still keeps that line on schedule.
   const sampledAt = performance.now();
-  if (!diagnosticsVisible()
+  if (!diagnosticsVisible() && !(performanceOverlayEnabled() && !streamingScreen.hidden)
       && sampledAt - lastStatisticsSampleTime < HIDDEN_STATISTICS_INTERVAL_MS) {
     return;
   }
@@ -3481,6 +3620,8 @@ async function updateStatistics() {
         codecReports[report.id] = report;
       }
     });
+    const latency = streamLatency.sample(inboundVideo, StreamLatency.roundTripSeconds(reports));
+    displayLatency(latency);
 
     statistics.actualResolution.textContent = String(videoElement.videoWidth || 0)
       + " × " + String(videoElement.videoHeight || 0);
@@ -3504,6 +3645,10 @@ async function updateStatistics() {
       statistics.video.packetsReceived.textContent = statisticValue(inboundVideo, "packetsReceived");
       statistics.video.packetsLost.textContent = statisticValue(inboundVideo, "packetsLost");
       statistics.video.bytesReceived.textContent = statisticValue(inboundVideo, "bytesReceived");
+      statistics.video.keyFramesDecoded.textContent = optionalStatistic(inboundVideo, "keyFramesDecoded");
+      statistics.video.pliCount.textContent = optionalStatistic(inboundVideo, "pliCount");
+      statistics.video.nackCount.textContent = optionalStatistic(inboundVideo, "nackCount");
+      statistics.video.freezeCount.textContent = optionalStatistic(inboundVideo, "freezeCount");
       const codecReport = inboundVideo.codecId ? codecReports[inboundVideo.codecId] : null;
       const receivedCodec = codecReport && codecReport.mimeType
         ? String(codecReport.mimeType)
@@ -3532,7 +3677,7 @@ async function updateStatistics() {
 
       if (sampleTime - lastStatisticsConsoleTime >= 5000) {
         lastStatisticsConsoleTime = sampleTime;
-        console.log("Stream diagnostics: " + JSON.stringify({
+        const diagnosticsLine = "Stream diagnostics: " + JSON.stringify({
           requestedWidth: selectedSession ? selectedSession.width : 0,
           requestedHeight: selectedSession ? selectedSession.height : 0,
           requestedCodec: selectedSession ? selectedSession.codec : "unknown",
@@ -3552,12 +3697,16 @@ async function updateStatistics() {
           packetsReceived: statisticValue(inboundVideo, "packetsReceived"),
           packetsLost: statisticValue(inboundVideo, "packetsLost"),
           bytesReceived: statisticValue(inboundVideo, "bytesReceived"),
+          recovery: recoveryStatistics(inboundVideo),
+          latency: latency,
           audioPacketsReceived: inboundAudio
             ? statisticValue(inboundAudio, "packetsReceived") : 0,
           audioPacketsLost: inboundAudio ? statisticValue(inboundAudio, "packetsLost") : 0,
           audioJitter: inboundAudio ? statisticValue(inboundAudio, "jitter") : 0,
           gamepadConnected: activeGamepad() !== null,
-        }));
+        });
+        console.log(diagnosticsLine);
+        remoteLog(diagnosticsLine);
       }
     }
 
@@ -3574,6 +3723,222 @@ async function updateStatistics() {
       statisticsErrorReported = true;
       reportError("getStats failed", error);
     }
+  }
+}
+
+function milliseconds(value) {
+  return value === null ? "-" : value.toFixed(1) + " ms";
+}
+
+function percent(value) {
+  return value === null ? "-" : value.toFixed(2) + " %";
+}
+
+// Shown in the overlay as well as the statistics panel: it is the one number a player
+// checks before anything else.
+function displayLatency(latency) {
+  const fields = statistics.latency;
+  fields.total.textContent = milliseconds(latency.totalMs)
+    + (latency.totalMs !== null && !latency.includesDisplay ? " (to decoder)" : "");
+  fields.average.textContent = milliseconds(latency.averageTotalMs);
+  fields.network.textContent = latency.roundTripMs === null
+    ? "-"
+    : milliseconds(latency.networkMs) + " (RTT " + latency.roundTripMs.toFixed(1) + ")";
+  fields.jitterBuffer.textContent = milliseconds(latency.jitterBufferMs);
+  fields.decode.textContent = milliseconds(latency.decodeMs);
+  fields.toScreen.textContent = latency.displayMs !== null
+    ? milliseconds(latency.displayMs) + " (max " + latency.displayMaxMs.toFixed(0) + ")"
+    : (latency.includesDisplay ? "-" : "unavailable");
+  fields.packetLoss.textContent = percent(latency.packetLossPercent)
+    + (latency.sessionPacketLossPercent === null
+      ? "" : " (session " + percent(latency.sessionPacketLossPercent) + ")");
+  fields.framesDropped.textContent = percent(latency.framesDroppedPercent);
+  overlay.latency.textContent = latency.averageTotalMs === null
+    ? "-"
+    : milliseconds(latency.totalMs) + " / avg " + latency.averageTotalMs.toFixed(0);
+  overlay.packetLoss.textContent = percent(latency.packetLossPercent);
+
+  performanceHud.total.textContent = fields.total.textContent;
+  performanceHud.average.textContent = fields.average.textContent;
+  performanceHud.network.textContent = fields.network.textContent;
+  performanceHud.jitterBuffer.textContent = fields.jitterBuffer.textContent;
+  performanceHud.decode.textContent = fields.decode.textContent;
+  performanceHud.toScreen.textContent = fields.toScreen.textContent;
+  performanceHud.packetLoss.textContent = fields.packetLoss.textContent;
+  performanceHud.framesDropped.textContent = fields.framesDropped.textContent;
+  const targetFps = selectedSession ? selectedSession.fps : 0;
+  performanceHud.fps.textContent = latency.receivedFps === null
+    ? "-" : latency.receivedFps.toFixed(0);
+  performanceHud.fpsTarget.textContent = targetFps ? "of " + String(targetFps) : "";
+  // Below nine tenths of what was asked for is a stream that visibly stutters.
+  performanceHud.fpsPanel.classList.toggle("is-low", latency.receivedFps !== null
+    && targetFps > 0 && latency.receivedFps < targetFps * 0.9);
+}
+
+function optionalStatistic(report, name) {
+  return report && typeof report[name] === "number" ? String(report[name]) : "-";
+}
+
+// What the TV's own WebRTC stack did about a stall, next to what the watchdog did. A PLI
+// count that does not move while the picture is black means the stack never asked the host
+// for anything, and only the watchdog's request reached it.
+function recoveryStatistics(inboundVideo) {
+  const counters = stallWatchdog.counters();
+  return {
+    presentedFrames: presentedFrameCallbacksSupported() ? presentedFrames : null,
+    keyFramesDecoded: inboundVideo ? inboundVideo.keyFramesDecoded : undefined,
+    pliCount: inboundVideo ? inboundVideo.pliCount : undefined,
+    firCount: inboundVideo ? inboundVideo.firCount : undefined,
+    nackCount: inboundVideo ? inboundVideo.nackCount : undefined,
+    freezeCount: inboundVideo ? inboundVideo.freezeCount : undefined,
+    totalFreezesDuration: inboundVideo ? inboundVideo.totalFreezesDuration : undefined,
+    stalls: counters.stalls,
+    keyframeRequests: counters.keyframeRequests,
+    reattachments: counters.reattachments,
+    lastStallMs: counters.lastStallMs,
+  };
+}
+
+function updateRecoveryStatus() {
+  const counters = stallWatchdog.counters();
+  let text = "No stalls";
+  if (counters.stalled) {
+    text = "Recovering";
+  } else if (counters.stalls > 0) {
+    text = String(counters.stalls) + (counters.stalls === 1 ? " stall" : " stalls")
+      + ", last " + (counters.lastStallMs / 1000).toFixed(1) + " s";
+  }
+  overlay.recovery.textContent = text;
+  statistics.video.stallRecovery.textContent = String(counters.stalls) + " stalls, "
+    + String(counters.keyframeRequests) + " keyframes asked, "
+    + String(counters.reattachments) + " re-attached";
+}
+
+function presentedFrameCallbacksSupported() {
+  return typeof videoElement.requestVideoFrameCallback === "function";
+}
+
+// Counts frames that actually reached the screen, which framesDecoded cannot tell: a
+// renderer that stopped presenting still decodes. Without the API the watchdog relies on
+// framesDecoded alone.
+function watchPresentedFrames() {
+  if (!presentedFrameCallbacksSupported() || presentedFrameCallbackPending) {
+    return;
+  }
+  presentedFrameCallbackPending = true;
+  videoElement.requestVideoFrameCallback(function (now, metadata) {
+    presentedFrameCallbackPending = false;
+    presentedFrames += 1;
+    streamLatency.recordPresentedFrame(metadata);
+    watchPresentedFrames();
+  });
+}
+
+async function inboundVideoReport() {
+  const receiver = peerConnection.getReceivers().find(function (candidate) {
+    return candidate.track && candidate.track.kind === "video";
+  });
+  // A single receiver's report is a fraction of the whole connection's, which matters at
+  // twice a second on a TV.
+  const reports = receiver && typeof receiver.getStats === "function"
+    ? await receiver.getStats()
+    : await peerConnection.getStats();
+  let inboundVideo = null;
+  reports.forEach(function (report) {
+    const kind = typeof report.kind === "undefined" ? report.mediaType : report.kind;
+    if (report.type === "inbound-rtp" && kind === "video" && !report.isRemote) {
+      inboundVideo = report;
+    }
+  });
+  return inboundVideo;
+}
+
+function requestKeyframe(reason) {
+  if (!dataChannelIsOpen(controlDataChannel)) {
+    return false;
+  }
+  controlDataChannel.send(JSON.stringify({
+    v: GAMEPAD_PROTOCOL_VERSION,
+    type: "request-keyframe",
+    reason: reason,
+  }));
+  return true;
+}
+
+// Rebuilds the renderer behind the video element without touching the connection: the same
+// tracks are attached again, so audio and input carry on.
+function reattachVideo() {
+  videoElement.srcObject = null;
+  videoElement.srcObject = remoteStream;
+  presentedFrameCallbackPending = false;
+  watchPresentedFrames();
+  startPlayback();
+}
+
+async function sampleStall() {
+  if (stallSampleInProgress || !peerConnection || sessionState !== "streaming"
+      || document.hidden || videoElement.hidden) {
+    return;
+  }
+  stallSampleInProgress = true;
+  try {
+    watchPresentedFrames();
+    const inboundVideo = await inboundVideoReport();
+    if (!inboundVideo || !peerConnection) {
+      return;
+    }
+    const wasStalled = stallWatchdog.counters().stalled;
+    const verdict = stallWatchdog.sample({
+      time: performance.now(),
+      bytesReceived: inboundVideo.bytesReceived,
+      framesDecoded: inboundVideo.framesDecoded,
+      framesPresented: presentedFrameCallbacksSupported() ? presentedFrames : undefined,
+    });
+    if (verdict.stalledMs > 0) {
+      remoteLog("Stall sample: " + JSON.stringify({
+        stalledMs: Math.round(verdict.stalledMs),
+        decoding: verdict.decoding,
+        bytesReceived: inboundVideo.bytesReceived,
+        packetsReceived: inboundVideo.packetsReceived,
+        packetsLost: inboundVideo.packetsLost,
+        framesReceived: inboundVideo.framesReceived,
+        framesDecoded: inboundVideo.framesDecoded,
+        framesDropped: inboundVideo.framesDropped,
+        keyFramesDecoded: inboundVideo.keyFramesDecoded,
+        framesPresented: presentedFrameCallbacksSupported() ? presentedFrames : null,
+        pliCount: inboundVideo.pliCount,
+        nackCount: inboundVideo.nackCount,
+        jitterBufferDelay: inboundVideo.jitterBufferDelay,
+        jitterBufferEmittedCount: inboundVideo.jitterBufferEmittedCount,
+        videoWidth: videoElement.videoWidth,
+        readyState: videoElement.readyState,
+        paused: videoElement.paused,
+      }));
+    }
+    if (verdict.action === "keyframe") {
+      const sent = requestKeyframe(verdict.decoding ? "not-presenting" : "not-decoding");
+      log("Video stalled for " + String(Math.round(verdict.stalledMs)) + " ms ("
+        + (verdict.decoding ? "decoding, not presenting" : "not decoding")
+        + "), keyframe " + (sent ? "requested" : "not requested: control channel closed")
+        + " " + JSON.stringify(recoveryStatistics(inboundVideo)));
+    } else if (verdict.action === "reattach") {
+      log("Video still stalled after " + String(Math.round(verdict.stalledMs))
+        + " ms, re-attaching the stream " + JSON.stringify(recoveryStatistics(inboundVideo)));
+      reattachVideo();
+      requestKeyframe("reattached");
+    }
+    if (wasStalled && !stallWatchdog.counters().stalled) {
+      log("Video recovered after " + String(Math.round(stallWatchdog.counters().lastStallMs))
+        + " ms " + JSON.stringify(recoveryStatistics(inboundVideo)));
+    }
+    updateRecoveryStatus();
+  } catch (error) {
+    if (!statisticsErrorReported) {
+      statisticsErrorReported = true;
+      reportError("Stall watchdog failed", error);
+    }
+  } finally {
+    stallSampleInProgress = false;
   }
 }
 
@@ -3631,6 +3996,8 @@ setInterval(function () {
   updateStatistics();
   updateInterpolationStatus();
 }, 1000);
+setInterval(sampleStall, STALL_SAMPLE_INTERVAL_MS);
+setInterval(flushRemoteLog, REMOTE_LOG_FLUSH_MS);
 updateTrackCounts();
 gamepadInputManager.updateDiagnostics();
 syncGamepadUi();
@@ -3641,6 +4008,8 @@ log("Persistent storage: " + durableStorage.describe());
 // preference set, and a select still holding its markup default would write that default
 // back over the saved value.
 interpolationSelect.value = savedPreferences.frameInterpolation ? "true" : "false";
+performanceOverlaySelect.value = savedPreferences.performanceOverlay ? "true" : "false";
+applyPerformanceOverlay();
 restoreCachedCapabilities();
 updateInterpolationStatus();
 renderGateways();

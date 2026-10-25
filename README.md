@@ -90,6 +90,15 @@ Sunshine-Web-RTC: capture → encode → WebRTC RTP → TV
   PC, so the encoder gets the bitrate the TV asked for, less only audio and RTP overhead. WebRTC on the LAN
   repairs losses with retransmission and keyframe requests instead.
 - **Faster recovery.** When the TV asks for a keyframe, the request goes directly to Sunshine's encoder.
+- **No waiting for the audio or the jitter buffer.** Sunshine marks every video packet with a zero
+  playout delay, so the TV shows each frame the moment it is decoded instead of buffering it, as Stadia
+  did; the TV also asks for the shortest jitter buffer and does not hold the picture back to stay in
+  sync with the audio, as Moonlight does not either. Screen to screen, 1080p60 dropped from 54 to 38 ms
+  in Sunshine-Web-RTC's latency test.
+- **Latency you can see.** The stream overlay and the top of the statistics panel show the latency from
+  the PC to the screen, drawing included, its session average, and the share of packets lost. The
+  *Performance overlay* setting, also in the stream menu, keeps them fixed at the top right of the stream,
+  with the frames per second actually arriving at the top left.
 - **Nothing extra to install or keep running.** There is no Windows service, tray application or second
   pairing. The TV pairs with Sunshine itself.
 
@@ -306,6 +315,14 @@ added by hand needs it entered on the TV.
 Download `MoonlightWebRTC.wgt` from the [Releases page](https://github.com/mlopezsegura/moonlight-webrtc-tizen/releases)
 and install it with Apps2Samsung, as described in [Installing on the TV](#installing-on-the-tv).
 
+Each release has two packages:
+
+- `MoonlightWebRTC.wgt` asks the TV to switch to **Game Mode** while the app is open, for the lowest input lag.
+- `MoonlightWebRTC-NoGameMode.wgt` leaves the TV's picture mode alone. Use it if Game Mode causes problems on
+  your TV or you prefer to choose the picture mode yourself.
+
+Both install as the same app, so installing one replaces the other.
+
 ## 3 — Add your PC and pair
 
 1. Open Moonlight WebRTC on the TV. The TV looks for PCs running Sunshine-Web-RTC on the local network and
@@ -439,7 +456,9 @@ The TV package needs [Samsung's Emscripten SDK](https://developer.samsung.com/sm
 GitHub Actions (`.github/workflows/build.yml`) runs the tests and builds `MoonlightWebRTC.wgt` on every push
 and pull request. To publish a release, set the version in `tizen/config.xml` and `tizen/update-check.js`,
 then push a matching tag, such as `v2.0.0` or `v2.0.0-beta.1` (published as a pre-release). The workflow
-attaches the package and `SHA256SUMS.txt` to the release.
+attaches both packages (`MoonlightWebRTC.wgt` and `MoonlightWebRTC-NoGameMode.wgt`) and `SHA256SUMS.txt` to
+the release. To build the package without Game Mode locally, pass `-NoGameMode` to
+`packaging/tizen/build-package.ps1`.
 
 ---
 

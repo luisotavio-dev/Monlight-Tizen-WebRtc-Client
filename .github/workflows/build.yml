@@ -1,5 +1,6 @@
-# Tests every push and pull request, builds MoonlightWebRTC.wgt, and publishes it as a GitHub
-# release when a version tag (v2.0.0, v2.1.0-beta.1, ...) is pushed.
+# Tests every push and pull request, builds MoonlightWebRTC.wgt (Game Mode on) and
+# MoonlightWebRTC-NoGameMode.wgt, and publishes both as a GitHub release when a version tag
+# (v2.0.0, v2.1.0-beta.1, ...) is pushed.
 name: Build and release
 
 on:
@@ -103,12 +104,15 @@ jobs:
             throw "Unable to extract the Emscripten SDK."
           }
 
-      - name: Build MoonlightWebRTC.wgt
+      - name: Build the WGT packages
         shell: pwsh
         run: |
-          ./packaging/tizen/build-package.ps1 `
-            -TizenCli (Join-Path $env:TIZEN_STUDIO 'tools\ide\bin\tizen.bat') `
-            -EmsdkRoot (Join-Path $env:EMSDK_DIRECTORY 'emscripten-release-bundle\emsdk')
+          $buildArguments = @{
+            TizenCli = Join-Path $env:TIZEN_STUDIO 'tools\ide\bin\tizen.bat'
+            EmsdkRoot = Join-Path $env:EMSDK_DIRECTORY 'emscripten-release-bundle\emsdk'
+          }
+          ./packaging/tizen/build-package.ps1 @buildArguments
+          ./packaging/tizen/build-package.ps1 @buildArguments -NoGameMode
           ./packaging/release/generate-checksums.ps1
 
       - uses: actions/upload-artifact@v4
@@ -116,6 +120,7 @@ jobs:
           name: MoonlightWebRTC
           path: |
             dist/tizen/MoonlightWebRTC.wgt
+            dist/tizen/MoonlightWebRTC-NoGameMode.wgt
             dist/SHA256SUMS.txt
           if-no-files-found: error
 
@@ -141,6 +146,7 @@ jobs:
           if [[ "$TAG" == *-* ]]; then prerelease=(--prerelease); fi
           gh release create "$TAG" \
             release/tizen/MoonlightWebRTC.wgt \
+            release/tizen/MoonlightWebRTC-NoGameMode.wgt \
             release/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" \
             --title "Moonlight WebRTC $TAG" \

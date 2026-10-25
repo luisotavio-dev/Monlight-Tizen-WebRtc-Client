@@ -3,7 +3,9 @@ param(
     [string]$TizenCli = 'C:\tizen-studio\tools\ide\bin\tizen.bat',
     [string]$SigningProfile,
     # Samsung's Emscripten SDK, required for the Wake-on-LAN module; see build-wake-on-lan.ps1.
-    [string]$EmsdkRoot
+    [string]$EmsdkRoot,
+    # Leaves out Samsung's Game Mode metadata, for TVs or setups where Game Mode gets in the way.
+    [switch]$NoGameMode
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,7 +16,8 @@ $outputDirectory = Join-Path $repositoryRoot 'dist\tizen'
 $sourceDirectory = Join-Path $outputDirectory '.source'
 $buildDirectory = Join-Path $outputDirectory '.build'
 $packageDirectory = Join-Path $outputDirectory '.package'
-$artifact = Join-Path $outputDirectory 'MoonlightWebRTC.wgt'
+$artifactName = if ($NoGameMode) { 'MoonlightWebRTC-NoGameMode.wgt' } else { 'MoonlightWebRTC.wgt' }
+$artifact = Join-Path $outputDirectory $artifactName
 
 if (-not (Test-Path -LiteralPath $TizenCli -PathType Leaf)) {
     throw "Tizen CLI was not found: $TizenCli"
@@ -48,7 +51,10 @@ try {
         'gateway-ipv4.js',
         'gateway-store.js',
         'index.html',
+        'low-latency.js',
         'preferences.js',
+        'stall-watchdog.js',
+        'stream-latency.js',
         'tizen_web_project.yaml',
         'ui.css',
         'ui.js',
@@ -62,6 +68,16 @@ try {
             continue
         }
         Copy-Item -LiteralPath $runtimePath -Destination $sourceDirectory
+    }
+    if ($NoGameMode) {
+        $configPath = Join-Path $sourceDirectory 'config.xml'
+        $config = Get-Content -LiteralPath $configPath -Raw
+        $gameModePattern = '(?m)^[ \t]*<tizen:metadata key="http://samsung\.com/tv/metadata/use\.game\.mode"[^>]*/>\r?\n'
+        if ($config -notmatch $gameModePattern) {
+            throw "Game Mode metadata was not found in $configPath."
+        }
+        $config = $config -replace $gameModePattern, ''
+        [System.IO.File]::WriteAllText($configPath, $config, (New-Object System.Text.UTF8Encoding $false))
     }
     Copy-Item -LiteralPath (Join-Path $projectDirectory 'assets') -Destination $sourceDirectory -Recurse
     & (Join-Path $PSScriptRoot 'build-wake-on-lan.ps1') -OutputDirectory (Join-Path $sourceDirectory 'wasm') -EmsdkRoot $EmsdkRoot
