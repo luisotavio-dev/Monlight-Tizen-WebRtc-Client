@@ -15,6 +15,10 @@ $assets = @(
     [pscustomobject]@{
         Name = 'MoonlightWebRTC.wgt'
         Path = Join-Path $DistributionDirectory 'tizen\MoonlightWebRTC.wgt'
+    },
+    [pscustomobject]@{
+        Name = 'MoonlightWebRTC-NoGameMode.wgt'
+        Path = Join-Path $DistributionDirectory 'tizen\MoonlightWebRTC-NoGameMode.wgt'
     }
 )
 
