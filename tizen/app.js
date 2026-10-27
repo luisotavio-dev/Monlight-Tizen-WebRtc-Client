@@ -260,12 +260,12 @@ let ui = null;
 let artworkLoader = null;
 let runningAppId = null;
 let hostOperationBusy = false;
-// The Gateway ends the stream of a host stop without an idle status, so the stopped
+// The server ends the stream of a host stop without an idle status, so the stopped
 // (or failed) host status is what closes the player.
 let hostStopFromStream = false;
 let hostStopToast = null;
 let hostStopTimer = null;
-// The Gateway reports the host stop within its own poll window; this only clears the toast.
+// The server reports the host stop within its own poll window; this only clears the toast.
 const HOST_STOP_TOAST_TIMEOUT_MS = 30000;
 let runningAppMenuOriginId = null;
 let switchTargetApplicationId = null;
@@ -1734,6 +1734,7 @@ function stopCurrentHostSession() {
     return;
   }
   const appTitle = selectedSession && selectedSession.appTitle ? selectedSession.appTitle : "the application";
+  const stoppingAppId = appSelect.value;
   try {
     sendGatewayMessage({ type: "stop-host-session" });
   } catch (error) {
@@ -1747,6 +1748,8 @@ function stopCurrentHostSession() {
   currentSessionId = 0;
   sessionState = "idle";
   showHome("applications");
+  // The application keeps running on the PC until the host confirms the stop.
+  setRunningApplication(stoppingAppId);
   setHomeMessage("Stopping " + appTitle + "...", false);
   if (ui) {
     hostStopToast = ui.showToast("Stopping session", "Closing " + appTitle + " on the PC", false,
@@ -2837,6 +2840,10 @@ function exitApplication() {
 }
 
 function gamepadUiRoute() {
+  if (hostStopFromStream) {
+    // Nothing is navigable until the PC confirms Stop session; the gameplay route ignores input.
+    return "gameplay";
+  }
   if (!launchingScreen.hidden) {
     return "ui";
   }
@@ -3113,6 +3120,10 @@ function openFocusedApplicationMenu() {
 }
 
 document.addEventListener("keydown", function (event) {
+  if (hostStopFromStream) {
+    event.preventDefault();
+    return;
+  }
   const key = event.key;
   const keyCode = event.keyCode;
   const isBack = key === "Backspace" || keyCode === 10009;
