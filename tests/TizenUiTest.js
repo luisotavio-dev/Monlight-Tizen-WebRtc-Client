@@ -69,6 +69,9 @@ assert.ok(/state === "stopped" \|\| state === "failed"\) \{\s*finishHostStopFrom
   "Stop session must close the player when the host stop finishes");
 assert.ok(/function stopCurrentHostSession\(\)[\s\S]*?closePeerConnection\(\);[\s\S]*?showToast\("Stopping session"[\s\S]*?\{ busy: true \}/.test(appSource),
   "Stop session must leave the stream at once and show a busy toast while the PC closes the app");
+assert.ok(/function gamepadUiRoute\(\) \{\s*if \(hostStopFromStream\)/.test(appSource)
+    && /addEventListener\("keydown", function \(event\) \{\s*if \(hostStopFromStream\)/.test(appSource),
+  "gamepad and remote input must be ignored until the PC confirms Stop session");
 assert.ok(html.includes('id="toast-region"'), "notification region is missing");
 assert.ok(html.includes('src="application-artwork.js"'),
   "the Applications screen must load the Gateway artwork transport");
