@@ -1,5 +1,6 @@
 #include "moonlight/HdrMetadata.h"
 
+#include <cstdint>
 #include <iomanip>
 #include <sstream>
 

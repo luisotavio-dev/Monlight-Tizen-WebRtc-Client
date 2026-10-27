@@ -7,7 +7,9 @@
 #include <iterator>
 #include <stdexcept>
 
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 #include <nlohmann/json.hpp>
 #include <openssl/crypto.h>
@@ -174,16 +176,32 @@ void TvClientStore::save() const
     }
     const std::string contents = Json{{"version", StoreVersion}, {"clients", std::move(clients)}}.dump(2);
 
-    const auto temporaryPath = std::filesystem::path(path_.wstring() + L".tmp");
+    auto temporaryPath = path_;
+    temporaryPath += ".tmp";
     {
         std::ofstream output(temporaryPath, std::ios::binary | std::ios::trunc);
+#ifndef _WIN32
+        // The list holds every TV's secret; keep it owner-only before any byte is written.
+        std::error_code permissionError;
+        std::filesystem::permissions(temporaryPath,
+                                     std::filesystem::perms::owner_read
+                                         | std::filesystem::perms::owner_write,
+                                     permissionError);
+#endif
         output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
         if (!output) {
             throw std::runtime_error("Unable to write the paired TV list");
         }
     }
-    if (!MoveFileExW(temporaryPath.c_str(), path_.c_str(),
-                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+#ifdef _WIN32
+    const bool replaced = MoveFileExW(temporaryPath.c_str(), path_.c_str(),
+                                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+#else
+    std::error_code renameError;
+    std::filesystem::rename(temporaryPath, path_, renameError);
+    const bool replaced = !renameError;
+#endif
+    if (!replaced) {
         std::error_code ignored;
         std::filesystem::remove(temporaryPath, ignored);
         throw std::runtime_error("Unable to persist the paired TV list");

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <iostream>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -284,13 +285,23 @@ void testMultiControllerAndRumble()
     }
 
     bridge.handleRumble(0, 65535, 32768);
+    // controller-status messages are already recorded, so wait for the rumble message itself.
+    const auto lastRumble = [&]() -> std::optional<Json> {
+        for (auto it = recorder.controlMessages.rbegin(); it != recorder.controlMessages.rend(); ++it) {
+            auto message = Json::parse(*it);
+            if (message["type"] == "rumble") {
+                return message;
+            }
+        }
+        return std::nullopt;
+    };
     require(waitUntil([&] {
         const std::lock_guard lock(recorder.mutex);
-        return !recorder.controlMessages.empty();
+        return lastRumble().has_value();
     }), "Rumble command was not dispatched asynchronously");
     {
         const std::lock_guard lock(recorder.mutex);
-        const auto message = Json::parse(recorder.controlMessages.back());
+        const auto message = *lastRumble();
         require(message["type"] == "rumble" && message["controllerId"] == 1
                     && message["controllerSlot"] == 0
                     && message["strongMagnitude"] == 1.0

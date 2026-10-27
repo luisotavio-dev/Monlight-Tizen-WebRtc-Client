@@ -21,6 +21,11 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netinet/in.h>
 #endif
 
 namespace gateway::moonlight {
@@ -57,6 +62,22 @@ std::vector<std::string> localIpv4Addresses()
         }
     }
     WSACleanup();
+#else
+    ifaddrs* interfaces = nullptr;
+    if (getifaddrs(&interfaces) == 0) {
+        for (auto* entry = interfaces; entry; entry = entry->ifa_next) {
+            if (!entry->ifa_addr || entry->ifa_addr->sa_family != AF_INET
+                || (entry->ifa_flags & IFF_UP) == 0 || (entry->ifa_flags & IFF_LOOPBACK) != 0) {
+                continue;
+            }
+            const auto* address = reinterpret_cast<const sockaddr_in*>(entry->ifa_addr);
+            std::array<char, INET_ADDRSTRLEN> text{};
+            if (inet_ntop(AF_INET, &address->sin_addr, text.data(), text.size())) {
+                addresses.emplace_back(text.data());
+            }
+        }
+        freeifaddrs(interfaces);
+    }
 #endif
     std::sort(addresses.begin(), addresses.end());
     addresses.erase(std::unique(addresses.begin(), addresses.end()), addresses.end());

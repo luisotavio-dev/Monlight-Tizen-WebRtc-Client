@@ -3,10 +3,14 @@
 #include "gateway/ApplicationArtworkCache.h"
 #include "gateway/GatewayLifecycle.h"
 #include "gateway/GatewayProtocol.h"
+#include "gateway/ManagementIpcProtocol.h"
+#include "gateway/ServiceIpcProtocol.h"
+#include "gateway/TvClientAuth.h"
+#ifdef _WIN32
 #include "gateway/ManagementIpcClient.h"
 #include "gateway/ServiceIpcServer.h"
-#include "gateway/TvClientAuth.h"
 #include "gateway/WindowsServiceHost.h"
+#endif
 #include "media/MediaSender.h"
 #include "moonlight/MoonlightMediaBridge.h"
 #include "moonlight/control/MoonlightIdentity.h"
@@ -160,7 +164,32 @@ struct ProgramOptions {
     std::optional<std::filesystem::path> dataDirectory;
     bool dataDirectoryExplicit = false;
     std::optional<std::filesystem::path> migrationSourceDirectory;
+    // Restricts the WebRTC ICE UDP ports, so a host firewall can open a fixed range
+    std::optional<std::pair<std::uint16_t, std::uint16_t>> udpPortRange;
 };
+
+std::optional<std::pair<std::uint16_t, std::uint16_t>> parseUdpPortRange(std::string_view text)
+{
+    const auto separator = text.find('-');
+    if (separator == std::string_view::npos) {
+        return std::nullopt;
+    }
+    const auto parsePort = [](std::string_view value) -> std::optional<std::uint16_t> {
+        unsigned int port = 0;
+        const auto result = std::from_chars(value.data(), value.data() + value.size(), port);
+        if (result.ec != std::errc() || result.ptr != value.data() + value.size() || port == 0
+            || port > 65535) {
+            return std::nullopt;
+        }
+        return static_cast<std::uint16_t>(port);
+    };
+    const auto begin = parsePort(text.substr(0, separator));
+    const auto end = parsePort(text.substr(separator + 1));
+    if (!begin || !end || *begin > *end) {
+        return std::nullopt;
+    }
+    return std::pair{*begin, *end};
+}
 
 ProgramOptions parseProgramOptions(int argc, char** argv)
 {
@@ -182,17 +211,26 @@ ProgramOptions parseProgramOptions(int argc, char** argv)
         } else if (argument == "--console") {
             options.hostMode = ProgramHostMode::Console;
         } else if (argument == "--service") {
+#ifndef _WIN32
+            throw std::invalid_argument(
+                "--service is Windows-only; run with --console under a systemd user service");
+#endif
             options.hostMode = ProgramHostMode::Service;
         } else if (argument.starts_with("--data-dir=") && argument.size() > 11) {
             options.dataDirectory = std::filesystem::path(argument.substr(11));
             options.dataDirectoryExplicit = true;
         } else if (argument.starts_with("--migrate-data-from=") && argument.size() > 20) {
             options.migrationSourceDirectory = std::filesystem::path(argument.substr(20));
+        } else if (argument.starts_with("--udp-ports=")) {
+            options.udpPortRange = parseUdpPortRange(argument.substr(12));
+            if (!options.udpPortRange) {
+                throw std::invalid_argument("--udp-ports expects <begin>-<end>, e.g. 50000-50100");
+            }
         } else {
             throw std::invalid_argument(
                 "Usage: moonlight_webrtc [--source=test|--source=moonlight] "
                 "[--host=<host>[:<port>]] [--app=<name>] [--pair] [--pair-tv] [--console|--service] "
-                "[--data-dir=<path>] [--migrate-data-from=<path>]");
+                "[--data-dir=<path>] [--migrate-data-from=<path>] [--udp-ports=<begin>-<end>]");
         }
     }
 
@@ -319,6 +357,7 @@ public:
         : sourceMode_(options.sourceMode)
         , moonlightOptions_{options.host, options.application}
         , explicitMoonlightHost_(options.host.has_value())
+        , udpPortRange_(options.udpPortRange)
         , identity_(sourceMode_ == MediaSourceMode::Moonlight
                         ? std::make_unique<gateway::moonlight::MoonlightIdentity>(
                             gateway::moonlight::MoonlightIdentity::resolveStorageDirectory(
@@ -330,8 +369,13 @@ public:
         , logger_(std::move(logger))
         , server_(makeServerConfiguration())
     {
+#ifdef _WIN32
         moonlightOptions_.allowUnavailableHostDisplayForHdr =
             options.hostMode == ProgramHostMode::Service;
+#else
+        // The host display state is only read on Windows; Sunshine decides HDR on Linux.
+        moonlightOptions_.allowUnavailableHostDisplayForHdr = true;
+#endif
         log("Moonlight WebRTC Gateway");
         server_.onClient([this](std::shared_ptr<rtc::WebSocket> socket) {
             acceptClient(std::move(socket));
@@ -618,6 +662,10 @@ private:
 
         rtc::Configuration configuration;
         configuration.disableAutoNegotiation = true;
+        if (udpPortRange_) {
+            configuration.portRangeBegin = udpPortRange_->first;
+            configuration.portRangeEnd = udpPortRange_->second;
+        }
         auto peerConnection = std::make_shared<rtc::PeerConnection>(configuration);
         session->peerConnection = peerConnection;
 
@@ -2366,6 +2414,7 @@ private:
     MediaSourceMode sourceMode_;
     gateway::moonlight::MoonlightSessionOptions moonlightOptions_;
     bool explicitMoonlightHost_ = false;
+    std::optional<std::pair<std::uint16_t, std::uint16_t>> udpPortRange_;
     mutable std::mutex moonlightOptionsMutex_;
     std::unique_ptr<gateway::moonlight::MoonlightIdentity> identity_;
     gateway::ApplicationArtworkCache artworkCache_;
@@ -2554,10 +2603,12 @@ private:
     std::mutex mutex_;
 };
 
+using RuntimeReadyCallback = std::function<void()>;
+
 int runGatewayRuntime(const ProgramOptions& options,
                       gateway::GatewayShutdownSignal& shutdown,
                       RuntimeLogger& logger,
-                      const gateway::WindowsServiceHost::ReadyCallback& ready)
+                      const RuntimeReadyCallback& ready)
 {
     SignalingServer server(options, std::ref(logger));
     if (options.pairTv) {
@@ -2567,6 +2618,7 @@ int runGatewayRuntime(const ProgramOptions& options,
         std::cout << "TV pairing PIN: " << pin
                   << " (enter it on the TV within two minutes)" << std::endl;
     }
+#ifdef _WIN32
     std::unique_ptr<gateway::serviceipc::ServiceIpcServer> serviceIpc;
     std::unique_ptr<gateway::managementipc::ManagementIpcClient> managementIpc;
     if (options.hostMode == ProgramHostMode::Service) {
@@ -2581,14 +2633,17 @@ int runGatewayRuntime(const ProgramOptions& options,
         managementIpc->start();
         logger("Management IPC client reconnecting to the interactive tray");
     }
+#endif
     ready();
     server.wait(shutdown);
+#ifdef _WIN32
     if (serviceIpc) {
         serviceIpc->stop();
     }
     if (managementIpc) {
         managementIpc->stop();
     }
+#endif
     logger("Gateway runtime stopped");
     return 0;
 }
@@ -2621,14 +2676,16 @@ int main(int argc, char** argv)
         }
         gateway::GatewayShutdownSignal shutdown;
         const auto runtime = [&options, &shutdown, &logger](
-                                 const gateway::WindowsServiceHost::ReadyCallback& ready) {
+                                 const RuntimeReadyCallback& ready) {
             return runGatewayRuntime(options, shutdown, logger, ready);
         };
 
+#ifdef _WIN32
         if (options.hostMode == ProgramHostMode::Service) {
             return gateway::WindowsServiceHost::run(
                 L"MoonlightWebRTCGateway", shutdown, runtime);
         }
+#endif
 
         std::signal(SIGINT, requestShutdown);
         std::signal(SIGTERM, requestShutdown);

@@ -429,10 +429,16 @@ int main()
                 "Explicit --data-dir did not take precedence for service mode");
         const auto serviceDataDirectory = gateway::moonlight::MoonlightIdentity::resolveStorageDirectory(
             std::nullopt, gateway::moonlight::MoonlightDataDirectoryMode::Service);
+#ifdef _WIN32
         require(serviceDataDirectory.filename() == "MoonlightWebRTC"
                     && serviceDataDirectory.parent_path()
                         == gateway::moonlight::MoonlightIdentity::serviceStorageDirectory().parent_path(),
                 "Service data directory did not resolve under ProgramData");
+#else
+        require(serviceDataDirectory == gateway::moonlight::MoonlightIdentity::defaultStorageDirectory()
+                    && serviceDataDirectory.filename() == "moonlight-webrtc",
+                "Service data directory did not resolve to the XDG data directory");
+#endif
 
         TemporaryDirectory migrationRoot;
         const auto legacyDirectory = migrationRoot.path() / "legacy";

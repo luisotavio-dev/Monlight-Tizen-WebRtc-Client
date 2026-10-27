@@ -10,6 +10,12 @@
 #include <WinSock2.h>
 #include <WS2tcpip.h>
 #include <iphlpapi.h>
+#else
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <linux/if_packet.h>
+#include <net/if.h>
+#include <netinet/in.h>
 #endif
 
 namespace gateway::platform {
@@ -62,8 +68,37 @@ std::optional<std::string> formatMacAddress(const unsigned char* bytes, std::siz
 std::optional<std::string> wakeOnLanMacAddressForPeer(std::string_view peerAddress)
 {
 #ifndef _WIN32
-    (void)peerAddress;
-    return std::nullopt;
+    // The adapter on the peer's IPv4 subnet; getifaddrs() reports its MAC as an AF_PACKET entry.
+    const auto host = peerHost(peerAddress);
+    in_addr peer{};
+    if (!host || inet_pton(AF_INET, host->c_str(), &peer) != 1) {
+        return std::nullopt;
+    }
+    ifaddrs* interfaces = nullptr;
+    if (getifaddrs(&interfaces) != 0) {
+        return std::nullopt;
+    }
+    std::optional<std::string> adapter;
+    for (auto* entry = interfaces; entry && !adapter; entry = entry->ifa_next) {
+        if (!entry->ifa_addr || !entry->ifa_netmask || entry->ifa_addr->sa_family != AF_INET
+            || (entry->ifa_flags & IFF_UP) == 0 || (entry->ifa_flags & IFF_LOOPBACK) != 0) {
+            continue;
+        }
+        const auto address = reinterpret_cast<const sockaddr_in*>(entry->ifa_addr)->sin_addr.s_addr;
+        const auto mask = reinterpret_cast<const sockaddr_in*>(entry->ifa_netmask)->sin_addr.s_addr;
+        if ((address & mask) == (peer.s_addr & mask)) {
+            adapter = entry->ifa_name;
+        }
+    }
+    std::optional<std::string> mac;
+    for (auto* entry = interfaces; adapter && entry && !mac; entry = entry->ifa_next) {
+        if (entry->ifa_addr && entry->ifa_addr->sa_family == AF_PACKET && *adapter == entry->ifa_name) {
+            const auto* link = reinterpret_cast<const sockaddr_ll*>(entry->ifa_addr);
+            mac = formatMacAddress(link->sll_addr, link->sll_halen);
+        }
+    }
+    freeifaddrs(interfaces);
+    return mac;
 #else
     auto host = peerHost(peerAddress);
     if (!host) {

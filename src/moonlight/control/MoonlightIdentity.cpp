@@ -11,9 +11,11 @@
 #include <string_view>
 #include <vector>
 
+#ifdef _WIN32
 #include <ShlObj.h>
 #include <sddl.h>
 #include <windows.h>
+#endif
 
 #include <nlohmann/json.hpp>
 #include <openssl/bio.h>
@@ -47,6 +49,12 @@ void writeTextFile(const std::filesystem::path& path, const std::string& content
         if (!output) {
             throw std::runtime_error("Unable to write identity file: " + path.string());
         }
+#ifndef _WIN32
+        // Identity files include the private key; keep them owner-only before any byte is written.
+        std::filesystem::permissions(temporaryPath,
+                                     std::filesystem::perms::owner_read
+                                         | std::filesystem::perms::owner_write);
+#endif
         output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
         if (!output) {
             throw std::runtime_error("Unable to finish writing identity file: " + path.string());
@@ -161,6 +169,9 @@ std::filesystem::path migrationStagingDirectory(const std::filesystem::path& des
 
 void restrictMigrationStagingDirectory(const std::filesystem::path& directory)
 {
+#ifndef _WIN32
+    std::filesystem::permissions(directory, std::filesystem::perms::owner_all);
+#else
     // Keep private identity material out of the inherited ProgramData ACL while
     // the migration copy is being assembled. The installer adds the service SID
     // after publishing the directory and before the service can start.
@@ -180,6 +191,7 @@ void restrictMigrationStagingDirectory(const std::filesystem::path& directory)
         throw std::runtime_error("Unable to secure Gateway migration staging directory: "
                                  + std::to_string(error));
     }
+#endif
 }
 
 bool isProgramDataParent(const std::filesystem::path& directory)
@@ -239,15 +251,31 @@ MoonlightIdentity::MoonlightIdentity(std::filesystem::path storageDirectory)
 
 std::filesystem::path MoonlightIdentity::defaultStorageDirectory()
 {
+#ifndef _WIN32
+    // XDG Base Directory: $XDG_DATA_HOME, falling back to ~/.local/share
+    if (const char* dataHome = std::getenv("XDG_DATA_HOME"); dataHome && *dataHome == '/') {
+        return std::filesystem::path(dataHome) / "moonlight-webrtc";
+    }
+    const char* home = std::getenv("HOME");
+    if (!home || !*home) {
+        throw std::runtime_error("HOME is not available");
+    }
+    return std::filesystem::path(home) / ".local" / "share" / "moonlight-webrtc";
+#else
     const char* localAppData = std::getenv("LOCALAPPDATA");
     if (!localAppData || !*localAppData) {
         throw std::runtime_error("LOCALAPPDATA is not available");
     }
     return std::filesystem::path(localAppData) / "MoonlightWebRTC";
+#endif
 }
 
 std::filesystem::path MoonlightIdentity::serviceStorageDirectory()
 {
+#ifndef _WIN32
+    // Linux runs the Gateway as a systemd user service, so it keeps the user's data directory.
+    return defaultStorageDirectory();
+#else
     PWSTR programData = nullptr;
     const HRESULT result = SHGetKnownFolderPath(FOLDERID_ProgramData, 0, nullptr, &programData);
     if (FAILED(result) || !programData) {
@@ -257,6 +285,7 @@ std::filesystem::path MoonlightIdentity::serviceStorageDirectory()
     const std::filesystem::path directory = std::filesystem::path(programData) / "MoonlightWebRTC";
     CoTaskMemFree(programData);
     return directory;
+#endif
 }
 
 std::filesystem::path MoonlightIdentity::resolveStorageDirectory(
@@ -402,6 +431,9 @@ const std::string& MoonlightIdentity::uniqueId() const
 void MoonlightIdentity::loadOrCreate()
 {
     std::filesystem::create_directories(storageDirectory_);
+#ifndef _WIN32
+    std::filesystem::permissions(storageDirectory_, std::filesystem::perms::owner_all);
+#endif
 
     const int existingFiles = identityFileCount(storageDirectory_);
 

@@ -2,11 +2,12 @@ cmake_minimum_required(VERSION 3.20)
 
 project(MoonlightWebRTC LANGUAGES C CXX)
 
-find_package(CURL CONFIG REQUIRED)
+find_package(CURL REQUIRED)
 find_package(LibDataChannel CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(pugixml CONFIG REQUIRED)
+find_package(Threads REQUIRED)
 
 set(BUILD_SHARED_LIBS OFF)
 add_subdirectory(third_party/moonlight-common-c EXCLUDE_FROM_ALL)
@@ -73,21 +74,23 @@ target_compile_features(management_ipc_protocol PUBLIC cxx_std_20)
 target_include_directories(management_ipc_protocol PUBLIC src)
 target_link_libraries(management_ipc_protocol PUBLIC nlohmann_json::nlohmann_json)
 
-add_library(management_ipc_client
-    src/gateway/ManagementIpcClient.cpp
-)
+if(WIN32)
+    add_library(management_ipc_client
+        src/gateway/ManagementIpcClient.cpp
+    )
 
-target_compile_features(management_ipc_client PUBLIC cxx_std_20)
-target_include_directories(management_ipc_client PUBLIC src)
-target_link_libraries(management_ipc_client PUBLIC management_ipc_protocol advapi32 wtsapi32)
+    target_compile_features(management_ipc_client PUBLIC cxx_std_20)
+    target_include_directories(management_ipc_client PUBLIC src)
+    target_link_libraries(management_ipc_client PUBLIC management_ipc_protocol advapi32 wtsapi32)
 
-add_library(service_ipc_server
-    src/gateway/ServiceIpcServer.cpp
-)
+    add_library(service_ipc_server
+        src/gateway/ServiceIpcServer.cpp
+    )
 
-target_compile_features(service_ipc_server PUBLIC cxx_std_20)
-target_include_directories(service_ipc_server PUBLIC src)
-target_link_libraries(service_ipc_server PUBLIC service_ipc_protocol advapi32)
+    target_compile_features(service_ipc_server PUBLIC cxx_std_20)
+    target_include_directories(service_ipc_server PUBLIC src)
+    target_link_libraries(service_ipc_server PUBLIC service_ipc_protocol advapi32)
+endif()
 
 add_library(tv_client_auth
     src/gateway/TvClientAuth.cpp
@@ -103,7 +106,9 @@ add_library(wake_on_lan_address
 
 target_compile_features(wake_on_lan_address PUBLIC cxx_std_20)
 target_include_directories(wake_on_lan_address PUBLIC src)
-target_link_libraries(wake_on_lan_address PUBLIC iphlpapi ws2_32)
+if(WIN32)
+    target_link_libraries(wake_on_lan_address PUBLIC iphlpapi ws2_32)
+endif()
 
 add_library(moonlight_video_profile
     src/moonlight/MoonlightVideoProfile.cpp
@@ -162,16 +167,13 @@ target_link_libraries(moonlight_control PUBLIC
     OpenSSL::Crypto
     OpenSSL::SSL
     pugixml::pugixml
-    advapi32
-    shell32
-    ole32
-    user32
-    ws2_32
 )
+if(WIN32)
+    target_link_libraries(moonlight_control PUBLIC advapi32 shell32 ole32 user32 ws2_32)
+endif()
 
 add_executable(moonlight_webrtc
     src/main.cpp
-    src/gateway/WindowsServiceHost.cpp
 )
 
 target_compile_features(moonlight_webrtc PRIVATE cxx_std_20)
@@ -179,8 +181,6 @@ target_link_libraries(moonlight_webrtc PRIVATE
     application_artwork_cache
     gateway_lifecycle
     gateway_protocol
-    management_ipc_client
-    service_ipc_server
     tv_client_auth
     h264_annex_b_reader
     moonlight_control
@@ -191,9 +191,24 @@ target_link_libraries(moonlight_webrtc PRIVATE
     webrtc_media_sender
     LibDataChannel::LibDataChannel
     nlohmann_json::nlohmann_json
-    advapi32
+    Threads::Threads
+)
+if(WIN32)
+    target_sources(moonlight_webrtc PRIVATE src/gateway/WindowsServiceHost.cpp)
+    target_link_libraries(moonlight_webrtc PRIVATE
+        management_ipc_client
+        service_ipc_server
+        advapi32
+    )
+endif()
+
+set_target_properties(moonlight_webrtc PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED YES
+    CXX_EXTENSIONS NO
 )
 
+if(WIN32)
 add_executable(moonlight_webrtc_tray WIN32
     src/tray/ConfigurationWindow.cpp
     src/tray/ManagementIpcServer.cpp
@@ -219,12 +234,7 @@ set_target_properties(moonlight_webrtc_tray PROPERTIES
     CXX_STANDARD_REQUIRED YES
     CXX_EXTENSIONS NO
 )
-
-set_target_properties(moonlight_webrtc PROPERTIES
-    CXX_STANDARD 20
-    CXX_STANDARD_REQUIRED YES
-    CXX_EXTENSIONS NO
-)
+endif()
 
 include(CTest)
 
