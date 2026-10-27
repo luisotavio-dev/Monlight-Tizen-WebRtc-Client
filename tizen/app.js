@@ -98,6 +98,7 @@ const continueButton = document.getElementById("continue-button");
 const diagnosticsButton = document.getElementById("diagnostics-button");
 const performanceOverlayButton = document.getElementById("performance-overlay-button");
 const stopButton = document.getElementById("stop-button");
+const stopHostStreamButton = document.getElementById("stop-host-stream-button");
 const homeMessage = document.getElementById("home-message");
 const gatewayStateElement = document.getElementById("gateway-state");
 const sunshineStateElement = document.getElementById("sunshine-state");
@@ -259,6 +260,9 @@ let ui = null;
 let artworkLoader = null;
 let runningAppId = null;
 let hostOperationBusy = false;
+// The Gateway ends the stream of a host stop without an idle status, so the stopped
+// (or failed) host status is what closes the player.
+let hostStopFromStream = false;
 let runningAppMenuOriginId = null;
 let switchTargetApplicationId = null;
 let currentGatewayName = "Moonlight Gateway";
@@ -1602,8 +1606,22 @@ function handleSessionStatus(message) {
   log("Session status: " + message.state);
 }
 
+function finishHostStopFromStream() {
+  if (!hostStopFromStream) {
+    return;
+  }
+  hostStopFromStream = false;
+  closePeerConnection();
+  currentSessionId = 0;
+  sessionState = "idle";
+  showHome("applications");
+}
+
 function handleHostSessionStatus(message) {
   const state = String(message.state || "unknown");
+  if (state === "stopped" || state === "failed") {
+    finishHostStopFromStream();
+  }
   if (state === "stopping") {
     hostOperationBusy = true;
     setHomeMessage("Stopping running application...", false);
@@ -1691,6 +1709,32 @@ function stopCurrentSession() {
     sessionStateElement.textContent = "Stopping";
   } catch (error) {
     reportError("Unable to stop session", error);
+  }
+}
+
+// Ends the stream and closes the application on the PC; "Stop streaming" keeps it running.
+function stopCurrentHostSession() {
+  hideStreamMenu();
+  if (!currentSessionId) {
+    showHome();
+    return;
+  }
+  if (hostOperationBusy) {
+    return;
+  }
+  try {
+    hostOperationBusy = true;
+    hostStopFromStream = true;
+    sessionTeardownInProgress = true;
+    sessionState = "stopping";
+    overlay.connection.textContent = "Stopping";
+    sessionStateElement.textContent = "Stopping";
+    sendGatewayMessage({ type: "stop-host-session" });
+  } catch (error) {
+    hostOperationBusy = false;
+    hostStopFromStream = false;
+    sessionTeardownInProgress = false;
+    reportError("Unable to stop Sunshine application", error);
   }
 }
 
@@ -3104,6 +3148,7 @@ continueButton.addEventListener("click", hideStreamMenu);
 diagnosticsButton.addEventListener("click", toggleDiagnostics);
 performanceOverlayButton.addEventListener("click", togglePerformanceOverlay);
 stopButton.addEventListener("click", stopCurrentSession);
+stopHostStreamButton.addEventListener("click", stopCurrentHostSession);
 resumeSessionButton.addEventListener("click", resumeRunningApplication);
 stopHostSessionButton.addEventListener("click", stopRunningApplication);
 switchCancelButton.addEventListener("click", closeSwitchAppDialog);
