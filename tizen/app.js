@@ -1481,6 +1481,10 @@ function createPeerConnection(sessionId) {
 
   peerConnection.ontrack = function (event) {
     event.track.enabled = !document.hidden;
+    if (event.track.kind === "video") {
+      const applied = LowLatency.minimizeReceiverDelay(event.receiver);
+      log("Video jitter buffer: " + (applied ? applied + " set to 0" : "the TV allows no target"));
+    }
     const alreadyAdded = remoteStream.getTracks().some(function (track) {
       return track.id === event.track.id;
     });
@@ -1537,7 +1541,11 @@ async function handleOffer(message) {
   }
 
   try {
-    await peerConnection.setRemoteDescription({ type: "offer", sdp: message.sdp });
+    // The video no longer waits for the audio: lip sync would hold each picture back.
+    await peerConnection.setRemoteDescription({
+      type: "offer",
+      sdp: LowLatency.separateAudioSync(message.sdp),
+    });
     while (pendingRemoteCandidates.length > 0) {
       await applyRemoteCandidate(pendingRemoteCandidates.shift());
     }

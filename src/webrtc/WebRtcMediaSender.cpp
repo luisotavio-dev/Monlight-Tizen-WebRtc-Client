@@ -83,6 +83,22 @@ void disableRtpColorSpace(
     rtpConfiguration->colorSpaceId = 0;
 }
 
+void configureRtpPlayoutDelay(
+    const std::shared_ptr<rtc::RtpPacketizationConfig>& rtpConfiguration,
+    int negotiatedExtensionId)
+{
+    if (!rtpConfiguration) {
+        throw std::invalid_argument("Video RTP configuration must not be null");
+    }
+    if (negotiatedExtensionId < 0 || negotiatedExtensionId > 14) {
+        throw std::invalid_argument(
+            "Playout-delay RTP extension requires a negotiated one-byte extension ID");
+    }
+    rtpConfiguration->playoutDelayId = static_cast<std::uint8_t>(negotiatedExtensionId);
+    rtpConfiguration->playoutDelayMin = 0;
+    rtpConfiguration->playoutDelayMax = 0;
+}
+
 void WebRtcMediaSender::sendOpusPacket(std::span<const std::uint8_t> packet,
                                        std::uint32_t rtpTimestamp)
 {

@@ -17,6 +17,9 @@ namespace gateway {
 inline constexpr std::string_view WebRtcColorSpaceExtensionUri =
     "http://www.webrtc.org/experiments/rtp-hdrext/color-space";
 inline constexpr int PreferredWebRtcColorSpaceExtensionId = 9;
+inline constexpr std::string_view WebRtcPlayoutDelayExtensionUri =
+    "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay";
+inline constexpr int PreferredWebRtcPlayoutDelayExtensionId = 6;
 
 class WebRtcMediaSender final : public MediaSender {
 public:
@@ -44,5 +47,10 @@ void configureHdrRtpColorSpace(
     int negotiatedExtensionId);
 void disableRtpColorSpace(
     const std::shared_ptr<rtc::RtpPacketizationConfig>& rtpConfiguration);
+// Zero playout delay: the receiver shows each frame as soon as it is decoded instead of
+// holding it for its jitter estimate. An ID of 0 disables the extension.
+void configureRtpPlayoutDelay(
+    const std::shared_ptr<rtc::RtpPacketizationConfig>& rtpConfiguration,
+    int negotiatedExtensionId);
 
 } // namespace gateway

@@ -832,6 +832,9 @@ private:
                 gateway::PreferredWebRtcColorSpaceExtensionId,
                 std::string(gateway::WebRtcColorSpaceExtensionUri)));
         }
+        video.addExtMap(rtc::Description::Entry::ExtMap(
+            gateway::PreferredWebRtcPlayoutDelayExtensionId,
+            std::string(gateway::WebRtcPlayoutDelayExtensionUri)));
         video.addSSRC(VideoSsrc, RtpCname, MediaStreamId, "video");
 
         session->videoTrack = peerConnection->addTrack(video);
@@ -2197,6 +2200,15 @@ private:
             }
         } else {
             gateway::disableRtpColorSpace(session->videoRtpConfiguration);
+        }
+        // Set before the connection opens, so the video sender only ever reads it.
+        if (const auto playoutDelayId = gateway::videoExtensionId(
+                sdp, gateway::WebRtcPlayoutDelayExtensionUri)) {
+            gateway::configureRtpPlayoutDelay(session->videoRtpConfiguration, *playoutDelayId);
+            log("WebRTC zero playout delay: NEGOTIATED, id=" + std::to_string(*playoutDelayId));
+        } else {
+            gateway::configureRtpPlayoutDelay(session->videoRtpConfiguration, 0);
+            log("WebRTC zero playout delay: NOT NEGOTIATED; the TV keeps its jitter buffer");
         }
         peerConnection->setRemoteDescription(rtc::Description(sdp, "answer"));
 

@@ -47,6 +47,7 @@ try {
         'gateway-ipv4.js',
         'gateway-store.js',
         'index.html',
+        'low-latency.js',
         'preferences.js',
         'tizen_web_project.yaml',
         'ui.css',

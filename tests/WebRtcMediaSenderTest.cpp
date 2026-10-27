@@ -65,6 +65,16 @@ int main()
         gateway::disableRtpColorSpace(hevcConfiguration);
         require(hevcConfiguration->colorSpaceId == 0,
                 "RTP color-space extension was not disabled");
+        require(hevcConfiguration->playoutDelayId == 0,
+                "RTP playout-delay extension was enabled before negotiation");
+        gateway::configureRtpPlayoutDelay(hevcConfiguration, 6);
+        require(hevcConfiguration->playoutDelayId == 6
+                    && hevcConfiguration->playoutDelayMin == 0
+                    && hevcConfiguration->playoutDelayMax == 0,
+                "Negotiated playout delay is not zero");
+        gateway::configureRtpPlayoutDelay(hevcConfiguration, 0);
+        require(hevcConfiguration->playoutDelayId == 0,
+                "RTP playout-delay extension was not disabled");
 
         rtc::Description::Video h264Description(
             "video", rtc::Description::Direction::SendOnly);
