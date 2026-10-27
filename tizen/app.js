@@ -204,6 +204,10 @@ let hostOperationBusy = false;
 // The Gateway ends the stream of a host stop without an idle status, so the stopped
 // (or failed) host status is what closes the player.
 let hostStopFromStream = false;
+let hostStopToast = null;
+let hostStopTimer = null;
+// The Gateway reports the host stop within its own poll window; this only clears the toast.
+const HOST_STOP_TOAST_TIMEOUT_MS = 30000;
 let runningAppMenuOriginId = null;
 let switchTargetApplicationId = null;
 let currentGatewayName = "Moonlight Gateway";
@@ -1248,6 +1252,11 @@ function readableState(state) {
 }
 
 function handleSessionStatus(message) {
+  if (hostStopFromStream) {
+    // The player already closed when Stop session was chosen; the host status ends the stop.
+    log("Session status during Stop session: " + message.state);
+    return;
+  }
   sessionState = message.state;
   sessionStateElement.textContent = readableState(message.state);
   if (typeof message.sessionId === "number") {
@@ -1329,10 +1338,12 @@ function finishHostStopFromStream() {
     return;
   }
   hostStopFromStream = false;
-  closePeerConnection();
-  currentSessionId = 0;
-  sessionState = "idle";
-  showHome("applications");
+  clearTimeout(hostStopTimer);
+  hostStopTimer = null;
+  if (hostStopToast) {
+    hostStopToast.remove();
+    hostStopToast = null;
+  }
 }
 
 function handleHostSessionStatus(message) {
@@ -1440,20 +1451,33 @@ function stopCurrentHostSession() {
   if (hostOperationBusy) {
     return;
   }
+  const appTitle = selectedSession && selectedSession.appTitle ? selectedSession.appTitle : "the application";
   try {
-    hostOperationBusy = true;
-    hostStopFromStream = true;
-    sessionTeardownInProgress = true;
-    sessionState = "stopping";
-    overlay.connection.textContent = "Stopping";
-    sessionStateElement.textContent = "Stopping";
     sendGatewayMessage({ type: "stop-host-session" });
   } catch (error) {
-    hostOperationBusy = false;
-    hostStopFromStream = false;
-    sessionTeardownInProgress = false;
     reportError("Unable to stop Sunshine application", error);
+    return;
   }
+  hostOperationBusy = true;
+  hostStopFromStream = true;
+  // Leave the stream at once, as Stop streaming does, while the PC closes the application.
+  closePeerConnection();
+  currentSessionId = 0;
+  sessionState = "idle";
+  showHome("applications");
+  setHomeMessage("Stopping " + appTitle + "...", false);
+  if (ui) {
+    hostStopToast = ui.showToast("Stopping session", "Closing " + appTitle + " on the PC", false,
+      { busy: true });
+  }
+  hostStopTimer = setTimeout(function () {
+    finishHostStopFromStream();
+    hostOperationBusy = false;
+    setHomeMessage("The PC did not confirm the stop; check the application list.", true);
+    requestApplications();
+    updatePlayAvailability();
+  }, HOST_STOP_TOAST_TIMEOUT_MS);
+  updatePlayAvailability();
 }
 
 function createPeerConnection(sessionId) {
