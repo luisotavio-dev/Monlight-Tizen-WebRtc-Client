@@ -2,7 +2,7 @@
   "use strict";
 
   // Kept equal to the version in config.xml; tests/TizenUpdateCheckTest.js checks that they match.
-  const APP_VERSION = "2.1.1";
+  const APP_VERSION = "2.2.0";
   const RELEASES_URL = "https://api.github.com/repos/mlopezsegura/moonlight-webrtc-tizen/releases?per_page=20";
   const RELEASES_PAGE = "github.com/mlopezsegura/moonlight-webrtc-tizen/releases";
   const STORAGE_KEY = "moonlight-webrtc.update-check";
