@@ -98,6 +98,7 @@ const continueButton = document.getElementById("continue-button");
 const diagnosticsButton = document.getElementById("diagnostics-button");
 const performanceOverlayButton = document.getElementById("performance-overlay-button");
 const stopButton = document.getElementById("stop-button");
+const stopHostStreamButton = document.getElementById("stop-host-stream-button");
 const homeMessage = document.getElementById("home-message");
 const gatewayStateElement = document.getElementById("gateway-state");
 const sunshineStateElement = document.getElementById("sunshine-state");
@@ -259,6 +260,13 @@ let ui = null;
 let artworkLoader = null;
 let runningAppId = null;
 let hostOperationBusy = false;
+// The server ends the stream of a host stop without an idle status, so the stopped
+// (or failed) host status is what closes the player.
+let hostStopFromStream = false;
+let hostStopToast = null;
+let hostStopTimer = null;
+// The server reports the host stop within its own poll window; this only clears the toast.
+const HOST_STOP_TOAST_TIMEOUT_MS = 30000;
 let runningAppMenuOriginId = null;
 let switchTargetApplicationId = null;
 let currentGatewayName = "Moonlight Gateway";
@@ -1526,6 +1534,11 @@ function readableState(state) {
 }
 
 function handleSessionStatus(message) {
+  if (hostStopFromStream) {
+    // The player already closed when Stop session was chosen; the host status ends the stop.
+    log("Session status during Stop session: " + message.state);
+    return;
+  }
   sessionState = message.state;
   sessionStateElement.textContent = readableState(message.state);
   if (typeof message.sessionId === "number") {
@@ -1602,8 +1615,24 @@ function handleSessionStatus(message) {
   log("Session status: " + message.state);
 }
 
+function finishHostStopFromStream() {
+  if (!hostStopFromStream) {
+    return;
+  }
+  hostStopFromStream = false;
+  clearTimeout(hostStopTimer);
+  hostStopTimer = null;
+  if (hostStopToast) {
+    hostStopToast.remove();
+    hostStopToast = null;
+  }
+}
+
 function handleHostSessionStatus(message) {
   const state = String(message.state || "unknown");
+  if (state === "stopped" || state === "failed") {
+    finishHostStopFromStream();
+  }
   if (state === "stopping") {
     hostOperationBusy = true;
     setHomeMessage("Stopping running application...", false);
@@ -1692,6 +1721,48 @@ function stopCurrentSession() {
   } catch (error) {
     reportError("Unable to stop session", error);
   }
+}
+
+// Ends the stream and closes the application on the PC; "Stop streaming" keeps it running.
+function stopCurrentHostSession() {
+  hideStreamMenu();
+  if (!currentSessionId) {
+    showHome();
+    return;
+  }
+  if (hostOperationBusy) {
+    return;
+  }
+  const appTitle = selectedSession && selectedSession.appTitle ? selectedSession.appTitle : "the application";
+  const stoppingAppId = appSelect.value;
+  try {
+    sendGatewayMessage({ type: "stop-host-session" });
+  } catch (error) {
+    reportError("Unable to stop Sunshine application", error);
+    return;
+  }
+  hostOperationBusy = true;
+  hostStopFromStream = true;
+  // Leave the stream at once, as Stop streaming does, while the PC closes the application.
+  closePeerConnection();
+  currentSessionId = 0;
+  sessionState = "idle";
+  showHome("applications");
+  // The application keeps running on the PC until the host confirms the stop.
+  setRunningApplication(stoppingAppId);
+  setHomeMessage("Stopping " + appTitle + "...", false);
+  if (ui) {
+    hostStopToast = ui.showToast("Stopping session", "Closing " + appTitle + " on the PC", false,
+      { busy: true });
+  }
+  hostStopTimer = setTimeout(function () {
+    finishHostStopFromStream();
+    hostOperationBusy = false;
+    setHomeMessage("The PC did not confirm the stop; check the application list.", true);
+    requestApplications();
+    updatePlayAvailability();
+  }, HOST_STOP_TOAST_TIMEOUT_MS);
+  updatePlayAvailability();
 }
 
 function createPeerConnection(sessionId) {
@@ -2769,6 +2840,10 @@ function exitApplication() {
 }
 
 function gamepadUiRoute() {
+  if (hostStopFromStream) {
+    // Nothing is navigable until the PC confirms Stop session; the gameplay route ignores input.
+    return "gameplay";
+  }
   if (!launchingScreen.hidden) {
     return "ui";
   }
@@ -3045,6 +3120,10 @@ function openFocusedApplicationMenu() {
 }
 
 document.addEventListener("keydown", function (event) {
+  if (hostStopFromStream) {
+    event.preventDefault();
+    return;
+  }
   const key = event.key;
   const keyCode = event.keyCode;
   const isBack = key === "Backspace" || keyCode === 10009;
@@ -3104,6 +3183,7 @@ continueButton.addEventListener("click", hideStreamMenu);
 diagnosticsButton.addEventListener("click", toggleDiagnostics);
 performanceOverlayButton.addEventListener("click", togglePerformanceOverlay);
 stopButton.addEventListener("click", stopCurrentSession);
+stopHostStreamButton.addEventListener("click", stopCurrentHostSession);
 resumeSessionButton.addEventListener("click", resumeRunningApplication);
 stopHostSessionButton.addEventListener("click", stopRunningApplication);
 switchCancelButton.addEventListener("click", closeSwitchAppDialog);

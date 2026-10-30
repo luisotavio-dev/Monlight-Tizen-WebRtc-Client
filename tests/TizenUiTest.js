@@ -62,6 +62,16 @@ assert.ok(html.includes('aria-disabled="true"'),
   "coming-soon rows must be disabled rather than focusable");
 assert.ok(html.includes('id="stream-menu"') && html.includes('id="diagnostics-button"'),
   "the streaming Back menu and statistics control must remain available");
+assert.ok(html.indexOf('id="stop-button"') < html.indexOf('id="stop-host-stream-button"')
+    && appSource.includes('sendGatewayMessage({ type: "stop-host-session" })'),
+  "the streaming Back menu must offer Stop session below Stop streaming");
+assert.ok(/state === "stopped" \|\| state === "failed"\) \{\s*finishHostStopFromStream\(\);/.test(appSource),
+  "Stop session must close the player when the host stop finishes");
+assert.ok(/function stopCurrentHostSession\(\)[\s\S]*?closePeerConnection\(\);[\s\S]*?showToast\("Stopping session"[\s\S]*?\{ busy: true \}/.test(appSource),
+  "Stop session must leave the stream at once and show a busy toast while the PC closes the app");
+assert.ok(/function gamepadUiRoute\(\) \{\s*if \(hostStopFromStream\)/.test(appSource)
+    && /addEventListener\("keydown", function \(event\) \{\s*if \(hostStopFromStream\)/.test(appSource),
+  "gamepad and remote input must be ignored until the PC confirms Stop session");
 assert.ok(html.includes('id="toast-region"'), "notification region is missing");
 assert.ok(html.includes('src="application-artwork.js"'),
   "the Applications screen must load the Gateway artwork transport");

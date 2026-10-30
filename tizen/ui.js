@@ -523,9 +523,17 @@
     return false;
   };
 
-  TizenUi.prototype.showToast = function (title, message, isError) {
+  // A busy toast shows a spinner and stays until the caller removes the returned element.
+  TizenUi.prototype.showToast = function (title, message, isError, options) {
+    const busy = Boolean(options && options.busy);
     const toast = document.createElement("div");
-    toast.className = "toast" + (isError ? " is-error" : "");
+    toast.className = "toast" + (isError ? " is-error" : "") + (busy ? " is-busy" : "");
+    if (busy) {
+      const spinner = document.createElement("span");
+      spinner.className = "toast-spinner";
+      spinner.setAttribute("aria-hidden", "true");
+      toast.appendChild(spinner);
+    }
     const content = document.createElement("div");
     content.className = "toast-content";
     const heading = document.createElement("span");
@@ -540,7 +548,10 @@
     }
     toast.appendChild(content);
     this.toastRegion.appendChild(toast);
-    setTimeout(function () { toast.remove(); }, 3600);
+    if (!busy) {
+      setTimeout(function () { toast.remove(); }, 3600);
+    }
+    return toast;
   };
 
   global.TizenUi = {
