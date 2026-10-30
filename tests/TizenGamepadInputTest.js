@@ -337,12 +337,23 @@ const pollPad = createGamepad(0, "Xbox Wireless Controller", null);
 gamepads = [pollPad];
 pollManager.resume();
 
+// The channel never retransmits, so every change is repeated on the next two polls and
+// then the controller goes quiet until it changes again or the keepalive is due.
+function pollTimes(count) {
+  for (let index = 0; index < count; index += 1) {
+    pollManager.poll();
+  }
+}
+
 pollManager.poll();
+assert.strictEqual(pollInput.messages.length, 1, "the first poll must publish the controller state");
+pollTimes(4);
 const afterFirstPoll = pollInput.messages.length;
-assert.ok(afterFirstPoll > 0, "the first poll must publish the controller state");
+assert.strictEqual(afterFirstPoll, 3,
+  "a new state must be repeated exactly twice in case a packet is lost");
 pollManager.poll();
 assert.strictEqual(pollInput.messages.length, afterFirstPoll,
-  "an unchanged controller state must not be resent");
+  "an unchanged controller state must not be resent once its repeats are spent");
 
 pollPad.buttons[0] = { pressed: true, value: 1 };
 pollManager.poll();
@@ -350,6 +361,37 @@ assert.strictEqual(pollInput.messages.length, afterFirstPoll + 1,
   "a changed controller state must be sent");
 assert.notStrictEqual(pollInput.messages[pollInput.messages.length - 1].buttons, 0,
   "the pressed button was lost by field-wise change detection");
+pollTimes(3);
+const pressRepeats = pollInput.messages.slice(afterFirstPoll);
+assert.strictEqual(pressRepeats.length, 3, "a press must be repeated twice and then stop");
+assert.ok(pressRepeats.every(function (message) { return message.buttons === pressRepeats[0].buttons; }),
+  "the repeats must carry the same state");
+assert.ok(pressRepeats[2].seq > pressRepeats[1].seq && pressRepeats[1].seq > pressRepeats[0].seq,
+  "each repeat needs a newer sequence or the host discards it as stale");
+
+pollPad.buttons[0] = { pressed: false, value: 0 };
+pollManager.poll();
+pollPad.buttons[0] = { pressed: true, value: 1 };
+pollManager.poll();
+const restarted = pollInput.messages.length;
+pollTimes(3);
+assert.strictEqual(pollInput.messages.length, restarted + 2,
+  "a change during the repeats must restart them for the newest state");
+
+// The poll loop stops behind a menu, so the neutral state has to be repeated on its own.
+const neutralTimers = [];
+global.setTimeout = function (callback) { neutralTimers.push(callback); return neutralTimers.length; };
+const beforePause = pollInput.messages.length;
+pollManager.pauseForUi();
+while (neutralTimers.length > 0) {
+  neutralTimers.shift()();
+}
+const neutralMessages = pollInput.messages.slice(beforePause);
+assert.strictEqual(neutralMessages.length, 3, "opening a menu must send the neutral state three times");
+assert.ok(neutralMessages.every(function (message) { return message.buttons === 0; }),
+  "the state sent behind a menu must release every button");
+global.setTimeout = function () { return 0; };
+pollManager.resume();
 
 pollPanelVisible = false;
 pollDiagnostics.controllers.textContent = "";

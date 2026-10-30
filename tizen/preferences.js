@@ -10,6 +10,7 @@
     frameRate: null,
     frameInterpolation: false,
     performanceOverlay: false,
+    sendLogs: false,
   });
 
   function copyDefaults() {
@@ -21,6 +22,7 @@
       frameRate: DEFAULTS.frameRate,
       frameInterpolation: DEFAULTS.frameInterpolation,
       performanceOverlay: DEFAULTS.performanceOverlay,
+      sendLogs: DEFAULTS.sendLogs,
     };
   }
 
@@ -49,6 +51,9 @@
     }
     if (typeof candidate.performanceOverlay === "boolean") {
       values.performanceOverlay = candidate.performanceOverlay;
+    }
+    if (typeof candidate.sendLogs === "boolean") {
+      values.sendLogs = candidate.sendLogs;
     }
     return values;
   }

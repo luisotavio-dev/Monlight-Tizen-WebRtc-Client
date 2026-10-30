@@ -57,6 +57,7 @@ const bitrateSelect = document.getElementById("bitrate-select");
 const frameRateSelect = document.getElementById("fps-select");
 const interpolationSelect = document.getElementById("interpolation-select");
 const performanceOverlaySelect = document.getElementById("performance-overlay-select");
+const sendLogsSelect = document.getElementById("send-logs-select");
 const interpolationStatusElement = document.getElementById("interpolation-status");
 const interpolationCanvas = document.getElementById("interpolation-canvas");
 const settingsSelectorMenu = document.getElementById("settings-selector-menu");
@@ -287,16 +288,26 @@ const GATEWAY_WATCH_RETRY_MS = 5000;
 // The TV's log, forwarded to the PC: Sunshine writes each line into its own log, next to
 // what it was doing at the same moment, so a stall can be read from one file on the PC
 // without a debugger attached to the TV. Lines wait here while the PC is unreachable; the
-// oldest are dropped first, and how many is reported once the PC is back.
+// oldest are dropped first, and how many is reported once the PC is back. Off unless the
+// viewer turns it on in Settings: it is a troubleshooting aid, not something to run always.
 const REMOTE_LOG_FLUSH_MS = 1000;
 const REMOTE_LOG_MAX_PENDING = 500;
 const REMOTE_LOG_BATCH_LINES = 100;
 let remoteLogLines = [];
 let remoteLogDropped = 0;
 let remoteLogSupported = true;
+let remoteLogEnabled = false;
+
+function setRemoteLogEnabled(enabled) {
+  remoteLogEnabled = enabled;
+  if (!enabled) {
+    remoteLogLines = [];
+    remoteLogDropped = 0;
+  }
+}
 
 function remoteLog(message) {
-  if (!remoteLogSupported) {
+  if (!remoteLogSupported || !remoteLogEnabled) {
     return;
   }
   remoteLogLines.push(new Date().toISOString().slice(11, 23) + " " + String(message));
@@ -307,7 +318,7 @@ function remoteLog(message) {
 }
 
 function flushRemoteLog() {
-  if (!remoteLogSupported || !gatewayAuthorized || !socket
+  if (!remoteLogSupported || !remoteLogEnabled || !gatewayAuthorized || !socket
       || socket.readyState !== WebSocket.OPEN || remoteLogLines.length === 0) {
     return;
   }
@@ -334,14 +345,20 @@ function isUnsupportedRemoteLog(message) {
     && String(message.message || "").indexOf("client-log") !== -1;
 }
 
+// Kept as lines rather than re-split from the element on every call: log() runs on the
+// main thread next to the gamepad poll loop, and splitting the whole panel each time was
+// paid for in input timing.
+const LOG_PANEL_LINES = 80;
+const logPanelLines = [];
+
 function log(message) {
   console.log(message);
   remoteLog(message);
-  logElement.textContent += message + "\n";
-  const lines = logElement.textContent.split("\n");
-  if (lines.length > 80) {
-    logElement.textContent = lines.slice(lines.length - 80).join("\n");
+  logPanelLines.push(String(message));
+  if (logPanelLines.length > LOG_PANEL_LINES) {
+    logPanelLines.shift();
   }
+  logElement.textContent = logPanelLines.join("\n") + "\n";
   logElement.scrollTop = logElement.scrollHeight;
 }
 
@@ -1162,6 +1179,7 @@ function currentPreferenceValues() {
       ? Number(frameRateSelect.value) : null,
     frameInterpolation: interpolationSelect.value === "true",
     performanceOverlay: performanceOverlaySelect.value === "true",
+    sendLogs: sendLogsSelect.value === "true",
   };
 }
 
@@ -3148,6 +3166,10 @@ interpolationSelect.addEventListener("change", function () {
   persistCurrentPreferences();
   applyFrameInterpolation();
 });
+sendLogsSelect.addEventListener("change", function () {
+  persistCurrentPreferences();
+  setRemoteLogEnabled(sendLogsSelect.value === "true");
+});
 
 function updateRemoteTracksForVisibility() {
   const enabled = !document.hidden;
@@ -4009,6 +4031,8 @@ log("Persistent storage: " + durableStorage.describe());
 // back over the saved value.
 interpolationSelect.value = savedPreferences.frameInterpolation ? "true" : "false";
 performanceOverlaySelect.value = savedPreferences.performanceOverlay ? "true" : "false";
+sendLogsSelect.value = savedPreferences.sendLogs ? "true" : "false";
+setRemoteLogEnabled(savedPreferences.sendLogs);
 applyPerformanceOverlay();
 restoreCachedCapabilities();
 updateInterpolationStatus();

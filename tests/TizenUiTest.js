@@ -222,7 +222,7 @@ const persistentStorage = storage();
 const preferences = global.ClientPreferences.create(persistentStorage);
 assert.deepStrictEqual(preferences.load(), {
   resolution: null, codec: null, hdr: false, bitrateKbps: null, frameRate: null, frameInterpolation: false,
-  performanceOverlay: false,
+  performanceOverlay: false, sendLogs: false,
 }, "empty storage must use the current defaults");
 preferences.update("resolution", "3840x2160");
 preferences.update("codec", "hevc");
@@ -231,19 +231,20 @@ preferences.update("bitrateKbps", 50000);
 preferences.update("frameRate", 120);
 preferences.update("frameInterpolation", true);
 preferences.update("performanceOverlay", true);
+preferences.update("sendLogs", true);
 assert.deepStrictEqual(global.ClientPreferences.create(persistentStorage).load(), {
   resolution: "3840x2160", codec: "hevc", hdr: true, bitrateKbps: 50000,
-  frameRate: 120, frameInterpolation: true, performanceOverlay: true,
+  frameRate: 120, frameInterpolation: true, performanceOverlay: true, sendLogs: true,
 }, "saved preferences must survive a simulated application reload");
 assert.ok(appSource.includes("fps: Number(frameRateSelect.value) || 60,")
   && html.includes('id="fps-select"') && html.indexOf('src="frame-rate-support.js"') >= 0,
   "the frame rate comes from Settings: the TV's maximum when it announces one, otherwise the user's choice");
 persistentStorage.setItem(global.ClientPreferences.STORAGE_KEY, JSON.stringify({
-  resolution: 4, codec: false, hdr: "true", bitrateKbps: -1, frameRate: "120", frameInterpolation: "yes", performanceOverlay: 1,
+  resolution: 4, codec: false, hdr: "true", bitrateKbps: -1, frameRate: "120", frameInterpolation: "yes", performanceOverlay: 1, sendLogs: "on",
 }));
 assert.deepStrictEqual(global.ClientPreferences.create(persistentStorage).load(), {
   resolution: null, codec: null, hdr: false, bitrateKbps: null, frameRate: null, frameInterpolation: false,
-  performanceOverlay: false,
+  performanceOverlay: false, sendLogs: false,
 }, "invalid persisted values must fall back safely");
 assert.strictEqual(global.ClientPreferences.resolveSupported("av1", ["h264", "hevc"], "h264"), "h264",
   "unsupported persisted options must fall back to the current supported default");
