@@ -5,6 +5,11 @@
   const MAX_CONTROLLERS = 16;
   const POLL_INTERVAL_MS = 1000 / 120;
   const KEEPALIVE_INTERVAL_MS = 250;
+  // The gamepad channel never retransmits. A lost press, release or stick return used to
+  // stand until the next keepalive, so a button stuck or a stick kept pushing for up to a
+  // quarter of a second. Repeating every change on the next polls covers a lost packet
+  // within one poll interval for two extra messages per change.
+  const REDUNDANT_SENDS = 2;
   // Input is polled at 120 Hz for latency; nobody can read numbers that fast.
   const DIAGNOSTICS_RENDER_INTERVAL_MS = 250;
   // A healthy gamepad channel carries well under 30 KB/s. Anything above this means the
@@ -168,6 +173,7 @@
     this.lastDiagnosticsRenderTime = 0;
     this.lastOverlayText = null;
     this.lastErrorLogTime = 0;
+    this.neutralTimer = null;
   }
 
   // send() rejects a payload whenever the channel closes between the readyState check
@@ -228,6 +234,7 @@
       pollState: neutralState(),
       lastSentState: neutralState(),
       hasSentState: false,
+      redundantSendsLeft: 0,
       lastSendTime: 0,
       rateWindowStart: performance.now(),
       messagesInWindow: 0,
@@ -244,6 +251,7 @@
         leftTrigger: 0,
         rightTrigger: 0,
         status: "idle",
+        loggedStatus: null,
       },
     };
     this.nextControllerId += 1;
@@ -383,7 +391,7 @@
       + " weak=" + String(desired.weakMagnitude);
     if (!actuator || typeof actuator.playEffect !== "function") {
       record.rumble.status = "no-actuator";
-      this.options.log("Rumble skipped: " + details);
+      this.logRumbleOutcome(record, "Rumble skipped: " + details);
       this.updateDiagnostics();
       return;
     }
@@ -397,24 +405,35 @@
     try {
       const result = actuator.playEffect("dual-rumble", parameters);
       record.rumble.status = "sent";
-      this.options.log("Rumble playEffect: " + details + " result=" + String(result));
       if (result && typeof result.then === "function") {
         result.then(function () {
           record.rumble.status = "accepted";
-          manager.options.log("Rumble accepted: " + details);
+          manager.logRumbleOutcome(record, "Rumble accepted: " + details);
           manager.updateDiagnostics();
         }, function (error) {
           record.rumble.status = "rejected";
-          manager.options.log("Rumble rejected: " + details + " error=" + String(error));
+          manager.logRumbleOutcome(record, "Rumble rejected: " + details + " error=" + String(error));
           manager.updateDiagnostics();
         });
+      } else {
+        this.logRumbleOutcome(record, "Rumble playEffect: " + details + " result=" + String(result));
       }
       this.updateDiagnostics();
     } catch (error) {
       record.rumble.status = "failed";
-      this.options.log("Rumble failed: " + details + " error=" + String(error));
+      this.logRumbleOutcome(record, "Rumble failed: " + details + " error=" + String(error));
       this.updateDiagnostics();
     }
+  };
+
+  // A game renews rumble many times a second. Logging every renewal put two log lines per
+  // update on the main thread, next to the poll loop; only a change of outcome is news.
+  GamepadInputManager.prototype.logRumbleOutcome = function (record, message) {
+    if (record.rumble.loggedStatus === record.rumble.status) {
+      return;
+    }
+    record.rumble.loggedStatus = record.rumble.status;
+    this.options.log(message);
   };
 
   GamepadInputManager.prototype.handleRumble = function (message) {
@@ -539,11 +558,14 @@
         manager.announce(record);
         const state = completeState(gamepad, record.pollState);
         manager.observeStopShortcut(record, state);
-        if (!record.hasSentState || !statesEqual(record.lastSentState, state)
+        const changed = !record.hasSentState || !statesEqual(record.lastSentState, state);
+        if (changed || record.redundantSendsLeft > 0
             || now - record.lastSendTime >= KEEPALIVE_INTERVAL_MS) {
           if (manager.sendState(record, state, now)) {
             copyState(record.lastSentState, state);
             record.hasSentState = true;
+            record.redundantSendsLeft = changed
+              ? REDUNDANT_SENDS : Math.max(0, record.redundantSendsLeft - 1);
           }
         }
       });
@@ -574,7 +596,35 @@
     this.pollTimer = setTimeout(function () { manager.poll(); }, delay);
   };
 
+  GamepadInputManager.prototype.cancelNeutralRepeats = function () {
+    if (this.neutralTimer !== null) {
+      clearTimeout(this.neutralTimer);
+      this.neutralTimer = null;
+    }
+  };
+
+  // The poll loop stops while a menu is open, so nothing else would follow the neutral
+  // state. If that one packet was lost, the host kept the last input held — a character
+  // running on its own behind the menu. The neutral state is repeated like any change.
+  GamepadInputManager.prototype.sendNeutralToAll = function (repeatsLeft) {
+    this.neutralTimer = null;
+    const now = performance.now();
+    const neutral = neutralState();
+    this.recordsByIndex.forEach(function (record) {
+      if (record.announced && this.sendState(record, neutral, now)) {
+        copyState(record.lastSentState, neutral);
+      }
+    }, this);
+    if (repeatsLeft > 0) {
+      const manager = this;
+      this.neutralTimer = setTimeout(function () {
+        manager.sendNeutralToAll(repeatsLeft - 1);
+      }, POLL_INTERVAL_MS);
+    }
+  };
+
   GamepadInputManager.prototype.resume = function () {
+    this.cancelNeutralRepeats();
     this.enumerate();
     if (!this.options.isStreaming()) {
       this.updateDiagnostics();
@@ -594,17 +644,13 @@
       clearTimeout(this.pollTimer);
       this.pollTimer = null;
     }
-    const now = performance.now();
-    const neutral = neutralState();
-    this.recordsByIndex.forEach(function (record) {
-      if (record.announced) {
-        this.sendState(record, neutral, now);
-      }
-    }, this);
+    this.cancelNeutralRepeats();
+    this.sendNeutralToAll(REDUNDANT_SENDS);
     this.updateDiagnostics();
   };
 
   GamepadInputManager.prototype.suspend = function (notifyGateway) {
+    this.cancelNeutralRepeats();
     if (this.pollTimer !== null) {
       clearTimeout(this.pollTimer);
       this.pollTimer = null;

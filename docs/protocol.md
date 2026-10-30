@@ -314,7 +314,8 @@ at most once a second per session.
 
 ## TV log
 
-Once authenticated, the TV forwards its own log to Sunshine about once a second:
+When **Settings → Connection → Send logs to PC** is on (it is off by default), and once authenticated, the TV
+forwards its own log to Sunshine about once a second. Turning it off drops the lines still waiting to be sent:
 
 ```json
 {"version":2,"type":"client-log","lines":["21:04:31.512 Video stalled for 1000 ms ..."]}
